@@ -1,8 +1,9 @@
 # dataset settings
 dataset_type = 'DOTADataset'
-data_root = 'data/split_ss_dota/'
-
+data_root = 'data/test/'
 backend_args = None
+classes = ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service')
+
 
 train_pipeline = [
     dict(type='mmdet.LoadImageFromFile', backend_args=backend_args),
@@ -58,8 +59,8 @@ train_dataloader = dict(
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
-        ann_file='trainval/annfiles/',
-        data_prefix=dict(img_path='trainval/images/'),
+        ann_file='label/',
+        data_prefix=dict(img_path='Images/'),
         filter_cfg=dict(filter_empty_gt=True),
         pipeline=train_pipeline))
 val_dataloader = dict(
@@ -71,8 +72,8 @@ val_dataloader = dict(
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
-        ann_file='trainval/annfiles/',
-        data_prefix=dict(img_path='trainval/images/'),
+        ann_file='label/',
+        data_prefix=dict(img_path='Images/'),
         test_mode=True,
         pipeline=val_pipeline))
 test_dataloader = val_dataloader

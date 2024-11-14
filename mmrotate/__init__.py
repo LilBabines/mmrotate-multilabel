@@ -10,11 +10,11 @@ mmcv_minimum_version = '2.0.0rc4'
 mmcv_maximum_version = '2.1.0'
 mmcv_version = digit_version(mmcv.__version__)
 
-assert (mmcv_version >= digit_version(mmcv_minimum_version)
-        and mmcv_version <= digit_version(mmcv_maximum_version)), \
-    f'MMCV {mmcv.__version__} is incompatible with MMRotate {__version__}. ' \
-    f'Please use MMCV >= {mmcv_minimum_version}, ' \
-    f'<= {mmcv_maximum_version} instead.'
+#assert (mmcv_version >= digit_version(mmcv_minimum_version)
+#        and mmcv_version <= digit_version(mmcv_maximum_version)), \
+#    f'MMCV {mmcv.__version__} is incompatible with MMRotate {__version__}. ' \
+#    f'Please use MMCV >= {mmcv_minimum_version}, ' \
+#    f'<= {mmcv_maximum_version} instead.'
 
 mmengine_minimum_version = '0.6.0'
 mmengine_maximum_version = '1.0.0'
@@ -30,11 +30,11 @@ mmdet_minimum_version = '3.0.0rc6'
 mmdet_maximum_version = '3.2.0'
 mmdet_version = digit_version(mmdet.__version__)
 
-assert (mmdet_version >= digit_version(mmdet_minimum_version)
-        and mmdet_version <= digit_version(mmdet_maximum_version)), \
-    f'MMDetection {mmdet.__version__} is incompatible ' \
-    f'with MMRotate {__version__}. ' \
-    f'Please use MMDetection >= {mmdet_minimum_version}, ' \
-    f'< {mmdet_maximum_version} instead.'
+#assert (mmdet_version >= digit_version(mmdet_minimum_version)
+#        and mmdet_version <= digit_version(mmdet_maximum_version)), \
+#    f'MMDetection {mmdet.__version__} is incompatible ' \
+#    f'with MMRotate {__version__}. ' \
+#    f'Please use MMDetection >= {mmdet_minimum_version}, ' \
+#    f'< {mmdet_maximum_version} instead.'
 
 __all__ = ['__version__', 'short_version', 'digit_version']

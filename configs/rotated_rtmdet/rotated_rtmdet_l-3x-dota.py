@@ -35,7 +35,8 @@ model = dict(
         act_cfg=dict(type='SiLU')),
     bbox_head=dict(
         type='RotatedRTMDetSepBNHead',
-        num_classes=15,
+        num_classes=6,
+        moov = 2,
         in_channels=256,
         stacked_convs=2,
         feat_channels=256,

@@ -124,3 +124,16 @@ tmp
 
 # custom
 mmrotate/.mim
+
+
+*.pth
+
+*.jpg
+
+ssdd_tiny/
+
+*.zip
+
+*.json
+
+*checkpoint

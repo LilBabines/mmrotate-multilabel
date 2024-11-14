@@ -3,7 +3,7 @@ _base_ = [
     '../_base_/default_runtime.py'
 ]
 angle_version = 'le90'
-
+classes = ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service')
 model = dict(
     type='mmdet.RetinaNet',
     data_preprocessor=dict(
@@ -32,7 +32,7 @@ model = dict(
         num_outs=5),
     bbox_head=dict(
         type='mmdet.RetinaHead',
-        num_classes=15,
+        num_classes=6,
         in_channels=256,
         stacked_convs=4,
         feat_channels=256,

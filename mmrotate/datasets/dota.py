@@ -22,19 +22,13 @@ class DOTADataset(BaseDataset):
             value should be non-negative integer. Defaults to 100.
         img_suffix (str): The suffix of images. Defaults to 'png'.
     """
-
+    #classes = ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service')
     METAINFO = {
         'classes':
-        ('plane', 'baseball-diamond', 'bridge', 'ground-track-field',
-         'small-vehicle', 'large-vehicle', 'ship', 'tennis-court',
-         'basketball-court', 'storage-tank', 'soccer-ball-field', 'roundabout',
-         'harbor', 'swimming-pool', 'helicopter'),
+        ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service'),
         # palette is a list of color tuples, which is used for visualization.
         'palette': [(165, 42, 42), (189, 183, 107), (0, 255, 0), (255, 0, 0),
-                    (138, 43, 226), (255, 128, 0), (255, 0, 255),
-                    (0, 255, 255), (255, 193, 193), (0, 51, 153),
-                    (255, 250, 205), (0, 139, 139), (255, 255, 0),
-                    (147, 116, 116), (0, 0, 255)]
+                    (138, 43, 226), (255, 128, 0), ]
     }
 
     def __init__(self,
