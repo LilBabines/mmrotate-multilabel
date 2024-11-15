@@ -9,8 +9,9 @@ from mmdet.models.dense_heads import RTMDetHead
 from mmdet.models.task_modules import anchor_inside_flags
 from mmdet.models.utils import (filter_scores_and_topk, multi_apply,
                                 select_single_mlvl, sigmoid_geometric_mean,
-                                unmap)
+                                unmap, images_to_levels)
 from mmdet.structures.bbox import bbox_cxcywh_to_xyxy, cat_boxes, distance2bbox
+from mmdet.structures import SampleList
 from mmdet.utils import (ConfigType, InstanceList, OptConfigType,
                          OptInstanceList, reduce_mean)
 from mmengine import ConfigDict
@@ -20,6 +21,43 @@ from torch import Tensor, nn
 
 from mmrotate.registry import MODELS, TASK_UTILS
 from mmrotate.structures import RotatedBoxes, distance2obb
+
+
+def unpack_gt_instances(batch_data_samples: SampleList) -> tuple:
+    """Unpack ``gt_instances``, ``gt_instances_ignore`` and ``img_metas`` based
+    on ``batch_data_samples``
+
+    Args:
+        batch_data_samples (List[:obj:`DetDataSample`]): The Data
+            Samples. It usually includes information such as
+            `gt_instance`, `gt_panoptic_seg` and `gt_sem_seg`.
+
+    Returns:
+        tuple:
+
+            - batch_gt_instances (list[:obj:`InstanceData`]): Batch of
+                gt_instance. It usually includes ``bboxes`` and ``labels``
+                attributes.
+            - batch_gt_instances_ignore (list[:obj:`InstanceData`]):
+                Batch of gt_instances_ignore. It includes ``bboxes`` attribute
+                data that is ignored during training and testing.
+                Defaults to None.
+            - batch_img_metas (list[dict]): Meta information of each image,
+                e.g., image size, scaling factor, etc.
+    """
+    batch_gt_instances = []
+    batch_gt_instances_ignore = []
+    batch_img_metas = []
+    for data_sample in batch_data_samples:
+        batch_img_metas.append(data_sample.metainfo)
+        batch_gt_instances.append(data_sample.gt_instances)
+        if 'ignored_instances' in data_sample:
+            batch_gt_instances_ignore.append(data_sample.ignored_instances)
+        else:
+            batch_gt_instances_ignore.append(None)
+
+    return batch_gt_instances, batch_gt_instances_ignore, batch_img_metas
+
 
 
 @MODELS.register_module()
@@ -768,6 +806,7 @@ class RotatedRTMDetSepBNHead(RotatedRTMDetHead):
                     self.num_base_priors * self.cls_out_channels,
                     self.pred_kernel_size,
                     padding=self.pred_kernel_size // 2))
+
             self.rtm_reg.append(
                 nn.Conv2d(
                     self.feat_channels,
@@ -833,15 +872,17 @@ class RotatedRTMDetSepBNHead(RotatedRTMDetHead):
         cls_scores = []
         bbox_preds = []
         angle_preds = []
+        
         for idx, (x, stride) in enumerate(
                 zip(feats, self.prior_generator.strides)):
             cls_feat = x
             reg_feat = x
-
+            
             for cls_layer in self.cls_convs[idx]:
                 cls_feat = cls_layer(cls_feat)
+            
             cls_score = self.rtm_cls[idx](cls_feat)
-
+            
             for reg_layer in self.reg_convs[idx]:
                 reg_feat = reg_layer(reg_feat)
 
@@ -859,4 +900,548 @@ class RotatedRTMDetSepBNHead(RotatedRTMDetHead):
             cls_scores.append(cls_score)
             bbox_preds.append(reg_dist)
             angle_preds.append(angle_pred)
+        
+        
         return tuple(cls_scores), tuple(bbox_preds), tuple(angle_preds)
+
+    def loss(self, x: Tuple[Tensor], batch_data_samples: SampleList) -> dict:
+        """Perform forward propagation and loss calculation of the detection
+        head on the features of the upstream network.
+
+        Args:
+            x (tuple[Tensor]): Features from the upstream network, each is
+                a 4D-tensor.
+            batch_data_samples (List[:obj:`DetDataSample`]): The Data
+                Samples. It usually includes information such as
+                `gt_instance`, `gt_panoptic_seg` and `gt_sem_seg`.
+
+        Returns:
+            dict: A dictionary of loss components.
+        """
+        cls_scores, bbox_preds, angle_preds = self(x)
+        
+        outputs = unpack_gt_instances(batch_data_samples)
+        (batch_gt_instances, batch_gt_instances_ignore,
+         batch_img_metas) = outputs
+        
+
+        losses = self.loss_by_feat(cls_scores=cls_scores,
+                                   bbox_preds=bbox_preds,
+                                   angle_preds=angle_preds,
+                                   batch_gt_instances=batch_gt_instances,
+                                   batch_img_metas=batch_img_metas,
+                                   batch_gt_instances_ignore=batch_gt_instances_ignore)
+        return losses
+    
+    def loss_by_feat_single(self, cls_score: Tensor, bbox_pred: Tensor,
+                            angle_pred: Tensor, labels: Tensor,
+                            label_weights: Tensor, bbox_targets: Tensor,
+                            assign_metrics: Tensor, stride: List[int]):
+        """Compute loss of a single scale level.
+
+        Args:
+            cls_score (Tensor): Box scores for each scale level
+                Has shape (N, num_anchors * num_classes, H, W).
+            bbox_pred (Tensor): Decoded bboxes for each scale
+                level with shape (N, num_anchors * 5, H, W) for rbox loss
+                or (N, num_anchors * 4, H, W) for hbox loss.
+            angle_pred (Tensor): Decoded bboxes for each scale
+                level with shape (N, num_anchors * angle_dim, H, W).
+            labels (Tensor): Labels of each anchors with shape
+                (N, num_total_anchors).
+            label_weights (Tensor): Label weights of each anchor with shape
+                (N, num_total_anchors).
+            bbox_targets (Tensor): BBox regression targets of each anchor with
+                shape (N, num_total_anchors, 4).
+            assign_metrics (Tensor): Assign metrics with shape
+                (N, num_total_anchors).
+            stride (List[int]): Downsample stride of the feature map.
+
+        Returns:
+            dict[str, Tensor]: A dictionary of loss components.
+        """
+        assert stride[0] == stride[1], 'h stride is not equal to w stride!'
+        cls_score = cls_score.permute(0, 2, 3, 1).reshape(
+            -1, self.cls_out_channels).contiguous()
+
+        if self.use_hbbox_loss:
+            bbox_pred = bbox_pred.reshape(-1, 4)
+        else:
+            bbox_pred = bbox_pred.reshape(-1, 5)
+        bbox_targets = bbox_targets.reshape(-1, 5)
+
+        labels = labels.reshape(-1)
+        assign_metrics = assign_metrics.reshape(-1)
+        label_weights = label_weights.reshape(-1)
+        targets = (labels, assign_metrics)
+
+        loss_cls = self.loss_cls(
+            cls_score, targets, label_weights, avg_factor=1.0)
+
+        # FG cat_id: [0, num_classes -1], BG cat_id: num_classes
+        bg_class_ind = self.num_classes
+        pos_inds = ((labels >= 0)
+                    & (labels < bg_class_ind)).nonzero().squeeze(1)
+
+        if len(pos_inds) > 0:
+            pos_bbox_targets = bbox_targets[pos_inds]
+            pos_bbox_pred = bbox_pred[pos_inds]
+
+            pos_decode_bbox_pred = pos_bbox_pred
+            pos_decode_bbox_targets = pos_bbox_targets
+            if self.use_hbbox_loss:
+                pos_decode_bbox_targets = bbox_cxcywh_to_xyxy(
+                    pos_bbox_targets[:, :4])
+
+            # regression loss
+            pos_bbox_weight = assign_metrics[pos_inds]
+
+            loss_angle = angle_pred.sum() * 0
+            if self.loss_angle is not None:
+                angle_pred = angle_pred.reshape(-1,
+                                                self.angle_coder.encode_size)
+                pos_angle_pred = angle_pred[pos_inds]
+                pos_angle_target = pos_bbox_targets[:, 4:5]
+                pos_angle_target = self.angle_coder.encode(pos_angle_target)
+                if pos_angle_target.dim() == 2:
+                    pos_angle_weight = pos_bbox_weight.unsqueeze(-1)
+                else:
+                    pos_angle_weight = pos_bbox_weight
+                loss_angle = self.loss_angle(
+                    pos_angle_pred,
+                    pos_angle_target,
+                    weight=pos_angle_weight,
+                    avg_factor=1.0)
+
+            loss_bbox = self.loss_bbox(
+                pos_decode_bbox_pred,
+                pos_decode_bbox_targets,
+                weight=pos_bbox_weight,
+                avg_factor=1.0)
+
+        else:
+            loss_bbox = bbox_pred.sum() * 0
+            pos_bbox_weight = bbox_targets.new_tensor(0.)
+            loss_angle = angle_pred.sum() * 0
+
+        return (loss_cls, loss_bbox, loss_angle, assign_metrics.sum(),
+                pos_bbox_weight.sum(), pos_bbox_weight.sum())
+
+    def loss_by_feat(self,
+                     cls_scores: List[Tensor],
+                     bbox_preds: List[Tensor],
+                     angle_preds: List[Tensor],
+                     batch_gt_instances: InstanceList,
+                     batch_img_metas: List[dict],
+                     batch_gt_instances_ignore: OptInstanceList = None):
+        """Compute losses of the head.
+
+        Args:
+            cls_scores (list[Tensor]): Box scores for each scale level
+                Has shape (N, num_anchors * num_classes, H, W).
+            bbox_preds (list[Tensor]): Box predict for each scale
+                level with shape (N, num_anchors * 4, H, W) in
+                [t, b, l, r] format.
+            bbox_preds (list[Tensor]): Angle pred for each scale
+                level with shape (N, num_anchors * angle_dim, H, W).
+            batch_gt_instances (list[:obj:`InstanceData`]): Batch of
+                gt_instance.  It usually includes ``bboxes`` and ``labels``
+                attributes.
+            batch_img_metas (list[dict]): Meta information of each image, e.g.,
+                image size, scaling factor, etc.
+            batch_gt_instances_ignore (list[:obj:`InstanceData`], Optional):
+                Batch of gt_instances_ignore. It includes ``bboxes`` attribute
+                data that is ignored during training and testing.
+                Defaults to None.
+
+        Returns:
+            dict[str, Tensor]: A dictionary of loss components.
+        """
+        num_imgs = len(batch_img_metas)
+        featmap_sizes = [featmap.size()[-2:] for featmap in cls_scores]
+        assert len(featmap_sizes) == self.prior_generator.num_levels
+
+        device = cls_scores[0].device
+        anchor_list, valid_flag_list = self.get_anchors(
+            featmap_sizes, batch_img_metas, device=device)
+        flatten_cls_scores = torch.cat([
+            cls_score.permute(0, 2, 3, 1).reshape(num_imgs, -1,
+                                                  self.cls_out_channels)
+            for cls_score in cls_scores
+        ], 1)
+
+        decoded_bboxes = []
+        decoded_hbboxes = []
+        angle_preds_list = []
+        for anchor, bbox_pred, angle_pred in zip(anchor_list[0], bbox_preds,
+                                                 angle_preds):
+            anchor = anchor.reshape(-1, 4)
+            bbox_pred = bbox_pred.permute(0, 2, 3, 1).reshape(num_imgs, -1, 4)
+            angle_pred = angle_pred.permute(0, 2, 3, 1).reshape(
+                num_imgs, -1, self.angle_coder.encode_size)
+
+            if self.use_hbbox_loss:
+                hbbox_pred = distance2bbox(anchor, bbox_pred)
+                decoded_hbboxes.append(hbbox_pred)
+
+            decoded_angle = self.angle_coder.decode(angle_pred, keepdim=True)
+            bbox_pred = torch.cat([bbox_pred, decoded_angle], dim=-1)
+
+            bbox_pred = distance2obb(
+                anchor, bbox_pred, angle_version=self.angle_version)
+            decoded_bboxes.append(bbox_pred)
+            angle_preds_list.append(angle_pred)
+
+        # flatten_bboxes is rbox, for target assign
+        flatten_bboxes = torch.cat(decoded_bboxes, 1)
+
+        cls_reg_targets = self.get_targets(
+            flatten_cls_scores,
+            flatten_bboxes,
+            anchor_list,
+            valid_flag_list,
+            batch_gt_instances,
+            batch_img_metas,
+            batch_gt_instances_ignore=batch_gt_instances_ignore)
+        (anchor_list, labels_list, label_weights_list, bbox_targets_list,
+         assign_metrics_list, sampling_results_list) = cls_reg_targets
+
+        if self.use_hbbox_loss:
+            decoded_bboxes = decoded_hbboxes
+
+        (losses_cls, losses_bbox, losses_angle, cls_avg_factors,
+         bbox_avg_factors, angle_avg_factors) = multi_apply(
+             self.loss_by_feat_single, cls_scores, decoded_bboxes,
+             angle_preds_list, labels_list, label_weights_list,
+             bbox_targets_list, assign_metrics_list,
+             self.prior_generator.strides)
+
+        cls_avg_factor = reduce_mean(sum(cls_avg_factors)).clamp_(min=1).item()
+        losses_cls = list(map(lambda x: x / cls_avg_factor, losses_cls))
+
+        bbox_avg_factor = reduce_mean(
+            sum(bbox_avg_factors)).clamp_(min=1).item()
+        losses_bbox = list(map(lambda x: x / bbox_avg_factor, losses_bbox))
+        if self.loss_angle is not None:
+            angle_avg_factors = reduce_mean(
+                sum(angle_avg_factors)).clamp_(min=1).item()
+            losses_angle = list(
+                map(lambda x: x / angle_avg_factors, losses_angle))
+            return dict(
+                loss_cls=losses_cls,
+                loss_bbox=losses_bbox,
+                loss_angle=losses_angle)
+        else:
+            return dict(loss_cls=losses_cls, loss_bbox=losses_bbox)
+
+
+@MODELS.register_module()
+class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
+    """Rotated RTMDetHead with separated BN layers, shared conv layers and MultiLabel.
+
+    Args:
+        num_classes (int): Number of categories excluding the background
+            category.
+        in_channels (int): Number of channels in the input feature map.
+        share_conv (bool): Whether to share conv layers between stages.
+            Defaults to True.
+        scale_angle (bool): Does not support in RotatedRTMDetSepBNHead,
+            Defaults to False.
+        norm_cfg (:obj:`ConfigDict` or dict)): Config dict for normalization
+            layer. Defaults to dict(type='BN', momentum=0.03, eps=0.001).
+        act_cfg (:obj:`ConfigDict` or dict)): Config dict for activation layer.
+            Defaults to dict(type='SiLU').
+        pred_kernel_size (int): Kernel size of prediction layer. Defaults to 1.
+        exp_on_reg (bool): Whether to apply exponential on bbox_pred.
+            Defaults to False.
+    """
+
+    def __init__(self,
+                 num_classes_1: int,
+                 num_classes_2: int,
+                 in_channels: int,
+                 share_conv: bool = True,
+                 scale_angle: bool = False,
+                 norm_cfg: ConfigType = dict(
+                     type='BN', momentum=0.03, eps=0.001),
+                 act_cfg: ConfigType = dict(type='SiLU'),
+                 pred_kernel_size: int = 1,
+                 exp_on_reg: bool = False,
+                 **kwargs) -> None:
+        self.share_conv = share_conv
+        self.exp_on_reg = exp_on_reg
+        self.cls_out_channels_1 = num_classes_1
+        self.cls_out_channels_2 = num_classes_2
+        self.num_classes = num_classes_1 + num_classes_2
+
+        assert scale_angle is False, \
+            'scale_angle does not support in RotatedRTMDetSepBNHead'
+        super().__init__(
+            self.num_classes,
+            in_channels,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg,
+            pred_kernel_size=pred_kernel_size,
+            scale_angle=False,
+            **kwargs)
+        
+        self.cls_out_channels_1 = num_classes_1
+        self.cls_out_channels_2 = num_classes_2
+
+        
+
+    def _init_layers(self) -> None:
+        """Initialize layers of the head."""
+        self.cls_convs = nn.ModuleList()
+        self.reg_convs = nn.ModuleList()
+
+        self.rtm_cls_1 = nn.ModuleList()
+        self.rtm_cls_2 = nn.ModuleList()
+
+        self.rtm_reg = nn.ModuleList()
+        self.rtm_ang = nn.ModuleList()
+        if self.with_objectness:
+            self.rtm_obj = nn.ModuleList()
+        for n in range(len(self.prior_generator.strides)):
+            cls_convs = nn.ModuleList()
+            reg_convs = nn.ModuleList()
+            for i in range(self.stacked_convs):
+                chn = self.in_channels if i == 0 else self.feat_channels
+                cls_convs.append(
+                    ConvModule(
+                        chn,
+                        self.feat_channels,
+                        3,
+                        stride=1,
+                        padding=1,
+                        conv_cfg=self.conv_cfg,
+                        norm_cfg=self.norm_cfg,
+                        act_cfg=self.act_cfg))
+                reg_convs.append(
+                    ConvModule(
+                        chn,
+                        self.feat_channels,
+                        3,
+                        stride=1,
+                        padding=1,
+                        conv_cfg=self.conv_cfg,
+                        norm_cfg=self.norm_cfg,
+                        act_cfg=self.act_cfg))
+            self.cls_convs.append(cls_convs)
+            self.reg_convs.append(reg_convs)
+
+            self.rtm_cls_1.append(
+                nn.Conv2d(
+                    self.feat_channels,
+                    self.num_base_priors * self.cls_out_channels_1,
+                    self.pred_kernel_size,
+                    padding=self.pred_kernel_size // 2))
+            self.rtm_cls_2.append(
+                nn.Conv2d(
+                    self.feat_channels,
+                    self.num_base_priors * self.cls_out_channels_2,
+                    self.pred_kernel_size,
+                    padding=self.pred_kernel_size // 2))
+            self.rtm_reg.append(
+                nn.Conv2d(
+                    self.feat_channels,
+                    self.num_base_priors * 4,
+                    self.pred_kernel_size,
+                    padding=self.pred_kernel_size // 2))
+            self.rtm_ang.append(
+                nn.Conv2d(
+                    self.feat_channels,
+                    self.num_base_priors * self.angle_coder.encode_size,
+                    self.pred_kernel_size,
+                    padding=self.pred_kernel_size // 2))
+            if self.with_objectness:
+                self.rtm_obj.append(
+                    nn.Conv2d(
+                        self.feat_channels,
+                        1,
+                        self.pred_kernel_size,
+                        padding=self.pred_kernel_size // 2))
+
+        if self.share_conv:
+            for n in range(len(self.prior_generator.strides)):
+                for i in range(self.stacked_convs):
+                    self.cls_convs[n][i].conv = self.cls_convs[0][i].conv
+                    self.reg_convs[n][i].conv = self.reg_convs[0][i].conv
+
+    def init_weights(self) -> None:
+        """Initialize weights of the head."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                normal_init(m, mean=0, std=0.01)
+            if is_norm(m):
+                constant_init(m, 1)
+        bias_cls = bias_init_with_prob(0.01)
+        for rtm_cls_1, rtm_cls_2, rtm_reg, rtm_ang in zip(self.rtm_cls_1, self.rtm_cls_2, self.rtm_reg,
+                                             self.rtm_ang):
+            normal_init(rtm_cls_1, std=0.01, bias=bias_cls)
+            normal_init(rtm_cls_2, std=0.01, bias=bias_cls)
+            normal_init(rtm_reg, std=0.01)
+            normal_init(rtm_ang, std=0.01)
+        if self.with_objectness:
+            for rtm_obj in self.rtm_obj:
+                normal_init(rtm_obj, std=0.01, bias=bias_cls)
+
+    def forward(self, feats: Tuple[Tensor, ...]) -> tuple:
+        """Forward features from the upstream network.
+
+        Args:
+            feats (tuple[Tensor]): Features from the upstream network, each is
+                a 4D-tensor.
+
+        Returns:
+            tuple: Usually a tuple of classification scores and bbox prediction
+            - cls_scores (list[Tensor]): Classification scores for all scale
+              levels, each is a 4D-tensor, the channels number is
+              num_base_priors * num_classes.
+            - bbox_preds (list[Tensor]): Box energies / deltas for all scale
+              levels, each is a 4D-tensor, the channels number is
+              num_base_priors * 4.
+            - angle_preds (list[Tensor]): Angle prediction for all scale
+              levels, each is a 4D-tensor, the channels number is
+              num_base_priors * angle_dim.
+        """
+        
+        cls_scores = []
+        bbox_preds = []
+        angle_preds = []
+        
+        for idx, (x, stride) in enumerate(
+                zip(feats, self.prior_generator.strides)):
+            cls_feat = x
+            reg_feat = x
+            
+            for cls_layer in self.cls_convs[idx]:
+                cls_feat = cls_layer(cls_feat)
+            
+            cls_score_1 = self.rtm_cls_1[idx](cls_feat)
+            cls_score_2 = self.rtm_cls_2[idx](cls_feat)
+            cls_score = torch.cat([cls_score_1, cls_score_2], dim=1)
+            
+            for reg_layer in self.reg_convs[idx]:
+                reg_feat = reg_layer(reg_feat)
+
+            if self.with_objectness:
+                objectness = self.rtm_obj[idx](reg_feat)
+                cls_score = inverse_sigmoid(
+                    sigmoid_geometric_mean(cls_score, objectness))
+            if self.exp_on_reg:
+                reg_dist = self.rtm_reg[idx](reg_feat).exp() * stride[0]
+            else:
+                reg_dist = self.rtm_reg[idx](reg_feat) * stride[0]
+
+            angle_pred = self.rtm_ang[idx](reg_feat)
+
+            cls_scores.append(cls_score)
+
+            bbox_preds.append(reg_dist)
+            angle_preds.append(angle_pred)
+        
+        
+        return tuple(cls_scores), tuple(bbox_preds), tuple(angle_preds)
+    
+
+
+    
+    
+    def loss_by_feat_single(self, cls_score: Tensor, bbox_pred: Tensor,
+                            angle_pred: Tensor, labels: Tensor,
+                            label_weights: Tensor, bbox_targets: Tensor,
+                            assign_metrics: Tensor, stride: List[int]):
+        """Compute loss of a single scale level.
+
+        Args:
+            cls_score (Tensor): Box scores for each scale level
+                Has shape (N, num_anchors * num_classes, H, W).
+            bbox_pred (Tensor): Decoded bboxes for each scale
+                level with shape (N, num_anchors * 5, H, W) for rbox loss
+                or (N, num_anchors * 4, H, W) for hbox loss.
+            angle_pred (Tensor): Decoded bboxes for each scale
+                level with shape (N, num_anchors * angle_dim, H, W).
+            labels (Tensor): Labels of each anchors with shape
+                (N, num_total_anchors).
+            label_weights (Tensor): Label weights of each anchor with shape
+                (N, num_total_anchors).
+            bbox_targets (Tensor): BBox regression targets of each anchor with
+                shape (N, num_total_anchors, 4).
+            assign_metrics (Tensor): Assign metrics with shape
+                (N, num_total_anchors).
+            stride (List[int]): Downsample stride of the feature map.
+
+        Returns:
+            dict[str, Tensor]: A dictionary of loss components.
+        """
+        assert stride[0] == stride[1], 'h stride is not equal to w stride!'
+        cls_score = cls_score.permute(0, 2, 3, 1).reshape(
+            -1, self.cls_out_channels).contiguous()
+
+
+        if self.use_hbbox_loss:
+            bbox_pred = bbox_pred.reshape(-1, 4)
+        else:
+            bbox_pred = bbox_pred.reshape(-1, 5)
+        bbox_targets = bbox_targets.reshape(-1, 5)
+
+        
+        labels = labels.reshape(-1)
+        assign_metrics = assign_metrics.reshape(-1)
+        label_weights = label_weights.reshape(-1)
+        targets = (labels, assign_metrics)
+
+        loss_cls = self.loss_cls(
+            cls_score, targets, label_weights, avg_factor=1.0,)
+
+        # FG cat_id: [0, num_classes -1], BG cat_id: num_classes
+        bg_class_ind = self.num_classes
+        pos_inds = ((labels >= 0)
+                    & (labels < bg_class_ind)).nonzero().squeeze(1)
+
+        if len(pos_inds) > 0:
+            pos_bbox_targets = bbox_targets[pos_inds]
+            pos_bbox_pred = bbox_pred[pos_inds]
+
+            pos_decode_bbox_pred = pos_bbox_pred
+            pos_decode_bbox_targets = pos_bbox_targets
+            if self.use_hbbox_loss:
+                pos_decode_bbox_targets = bbox_cxcywh_to_xyxy(
+                    pos_bbox_targets[:, :4])
+
+            # regression loss
+            pos_bbox_weight = assign_metrics[pos_inds]
+
+            loss_angle = angle_pred.sum() * 0
+            if self.loss_angle is not None:
+                angle_pred = angle_pred.reshape(-1,
+                                                self.angle_coder.encode_size)
+                pos_angle_pred = angle_pred[pos_inds]
+                pos_angle_target = pos_bbox_targets[:, 4:5]
+                pos_angle_target = self.angle_coder.encode(pos_angle_target)
+                if pos_angle_target.dim() == 2:
+                    pos_angle_weight = pos_bbox_weight.unsqueeze(-1)
+                else:
+                    pos_angle_weight = pos_bbox_weight
+                loss_angle = self.loss_angle(
+                    pos_angle_pred,
+                    pos_angle_target,
+                    weight=pos_angle_weight,
+                    avg_factor=1.0)
+
+            loss_bbox = self.loss_bbox(
+                pos_decode_bbox_pred,
+                pos_decode_bbox_targets,
+                weight=pos_bbox_weight,
+                avg_factor=1.0)
+
+        else:
+            loss_bbox = bbox_pred.sum() * 0
+            pos_bbox_weight = bbox_targets.new_tensor(0.)
+            loss_angle = angle_pred.sum() * 0
+
+        return (loss_cls, loss_bbox, loss_angle, assign_metrics.sum(),
+                pos_bbox_weight.sum(), pos_bbox_weight.sum())
+
+    
