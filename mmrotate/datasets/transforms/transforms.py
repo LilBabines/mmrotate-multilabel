@@ -292,7 +292,11 @@ class RandomRotateML(RandomRotate):
                  rect_obj_labels = None, 
                  rotate_type = 'Rotate', 
                  **rotate_kwargs):
-        super(RandomRotateML).__init__(prob, angle_range, rect_obj_labels, rotate_type, **rotate_kwargs)
+        super().__init__(prob=prob,
+                         angle_range=angle_range,
+                         rect_obj_labels=rect_obj_labels, 
+                         rotate_type=rotate_type, 
+                         **rotate_kwargs)
     
     def transform(self, results : dict) -> dict:
         

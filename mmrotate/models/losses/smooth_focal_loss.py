@@ -4,8 +4,9 @@ import torch.nn.functional as F
 from mmdet.models import weight_reduce_loss
 
 from mmrotate.registry import MODELS
-
-
+from functools import partial
+import torch
+from mmdet.models.losses.gfocal_loss import quality_focal_loss,quality_focal_loss_tensor_target, quality_focal_loss_with_prob
 def smooth_focal_loss(pred,
                       target,
                       weight=None,
@@ -126,3 +127,101 @@ class SmoothFocalLoss(nn.Module):
             avg_factor=avg_factor)
 
         return loss_cls
+
+
+@MODELS.register_module()
+class QualityFocalLoss(nn.Module):
+    r"""Quality Focal Loss (QFL) is a variant of `Generalized Focal Loss:
+    Learning Qualified and Distributed Bounding Boxes for Dense Object
+    Detection <https://arxiv.org/abs/2006.04388>`_.
+
+    Args:
+        use_sigmoid (bool): Whether sigmoid operation is conducted in QFL.
+            Defaults to True.
+        beta (float): The beta parameter for calculating the modulating factor.
+            Defaults to 2.0.
+        reduction (str): Options are "none", "mean" and "sum".
+        loss_weight (float): Loss weight of current loss.
+        activated (bool, optional): Whether the input is activated.
+            If True, it means the input has been activated and can be
+            treated as probabilities. Else, it should be treated as logits.
+            Defaults to False.
+    """
+
+    def __init__(self,
+                 use_sigmoid=True,
+                 beta=2.0,
+                 reduction='mean',
+                 loss_weight=1.0,
+                 activated=False,
+                 num_classes_1=6,
+                 num_classes_2=6,):
+        super(QualityFocalLoss, self).__init__()
+        assert use_sigmoid is True, 'Only sigmoid in QFL supported now.'
+        self.use_sigmoid = use_sigmoid
+        self.beta = beta
+        self.reduction = reduction
+        self.loss_weight = loss_weight
+        self.activated = activated
+        self.num_classes_1 = num_classes_1
+        self.num_classes_2 = num_classes_2
+        
+
+    def forward(self,
+                pred,
+                target,
+                weight=None,
+                avg_factor=None,
+                reduction_override=None):
+        """Forward function.
+
+        Args:
+            pred (torch.Tensor): Predicted joint representation of
+                classification and quality (IoU) estimation with shape (N, C),
+                C is the number of classes.
+            target (Union(tuple([torch.Tensor]),Torch.Tensor)): The type is
+                tuple, it should be included Target category label with
+                shape (N,) and target quality label with shape (N,).The type
+                is torch.Tensor, the target should be one-hot form with
+                soft weights.
+            weight (torch.Tensor, optional): The weight of loss for each
+                prediction. Defaults to None.
+            avg_factor (int, optional): Average factor that is used to average
+                the loss. Defaults to None.
+            reduction_override (str, optional): The reduction method used to
+                override the original reduction method of the loss.
+                Defaults to None.
+        """
+        assert reduction_override in (None, 'none', 'mean', 'sum')
+        reduction = (
+            reduction_override if reduction_override else self.reduction)
+        if self.use_sigmoid:
+            if self.activated:
+                calculate_loss_func = quality_focal_loss_with_prob
+            else:
+                calculate_loss_func = quality_focal_loss
+            if isinstance(target, torch.Tensor):
+                # the target shape with (N,C) or (N,C,...), which means
+                # the target is one-hot form with soft weights.
+                calculate_loss_func = partial(
+                    quality_focal_loss_tensor_target, activated=self.activated)
+            loss = calculate_loss_func(
+                pred,
+                target,
+                weight,
+                beta=self.beta,
+                reduction=reduction,
+                avg_factor=avg_factor)
+            loss_cls = self.loss_weight * loss
+
+            print('QualityFocalLoss loss_cls:', loss_cls)
+            print()
+            print('pred', pred.shape, pred.min().cpu().detach().numpy(), pred.max().cpu().detach().numpy(), pred.mean().cpu().detach().numpy())
+            print('target', target[0].shape, target[0].min().cpu().detach().numpy(), target[0].max().cpu().detach().numpy())
+            print('target', target[1].shape, target[1].min().cpu().detach().numpy(), target[1].max().cpu().detach().numpy(), target[1].mean().cpu().detach().numpy())
+            print('weight', weight.shape, weight.min().cpu().detach().numpy(), weight.max().cpu().detach().numpy(), weight.mean().mean().cpu().detach().numpy())
+            print("------------------")
+        else:
+            raise NotImplementedError
+        return loss_cls
+    

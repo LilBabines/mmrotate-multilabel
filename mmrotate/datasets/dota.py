@@ -300,7 +300,9 @@ class DOTADatasetML(BaseDataset):
             if data is None:
                 raise Exception('Test time pipline should not get `None` '
                                 'data_sample')
-        
+            print("before propess")
+            print(data)
+            print('-------------')
             return data
 
         for _ in range(self.max_refetch + 1):
@@ -310,7 +312,9 @@ class DOTADatasetML(BaseDataset):
             if data is None:
                 idx = self._rand_another()
                 continue
-            
+            print("before propess")
+            print(data)
+            print('-------------')
             return data
 
         raise Exception(f'Cannot find valid image after {self.max_refetch}! '

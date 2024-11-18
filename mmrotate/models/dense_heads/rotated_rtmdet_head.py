@@ -1359,13 +1359,11 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
             dict: A dictionary of loss components.
         """
         outs = self(x)
-        print("-------------DAAAATAAAAAA --------------")
-        print(batch_data_samples)
+        
         outputs = unpack_gt_instances(batch_data_samples)
         (batch_gt_instances, batch_gt_instances_ignore,
          batch_img_metas) = outputs
-
-        print('batch_gt_instances:', batch_gt_instances)
+        print(batch_gt_instances)
         loss_inputs = outs + (batch_gt_instances, batch_img_metas,
                               batch_gt_instances_ignore)
         

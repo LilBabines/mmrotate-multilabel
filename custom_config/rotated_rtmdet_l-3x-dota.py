@@ -47,7 +47,7 @@ model = dict(
         bbox_coder=dict(
             type='DistanceAnglePointCoder', angle_version=angle_version),
         loss_cls=dict(
-            type='mmdet.QualityFocalLoss',
+            type='QualityFocalLoss',
             use_sigmoid=True,
             beta=2.0,
             loss_weight=1.0,
