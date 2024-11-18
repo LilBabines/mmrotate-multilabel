@@ -286,6 +286,32 @@ class RandomRotate(BaseTransform):
 
 
 @TRANSFORMS.register_module()
+class RandomRotateML(RandomRotate):
+    def __init__(self, prob = 0.5, 
+                 angle_range = 180, 
+                 rect_obj_labels = None, 
+                 rotate_type = 'Rotate', 
+                 **rotate_kwargs):
+        super(RandomRotateML).__init__(prob, angle_range, rect_obj_labels, rotate_type, **rotate_kwargs)
+    
+    def transform(self, results : dict) -> dict:
+        
+        """The transform function."""
+        if not self._is_rotate():
+            return results
+
+        rotate_angle = self._random_angle()
+        if self.rect_obj_labels is not None and 'gt_bboxes_labels_1' in results:
+            for label in self.rect_obj_labels:
+                if (results['gt_bboxes_labels_1'] == label).any():
+                    rotate_angle = self._random_horizontal_angle()
+                    break
+
+        self.rotate.rotate_angle = rotate_angle
+        return self.rotate(results)
+
+
+@TRANSFORMS.register_module()
 class RandomChoiceRotate(BaseTransform):
     """Random rotate image & bbox & masks from a list of angles. Rotation angle
     will be randomly choiced from ``angles``. Required Keys:

@@ -4,7 +4,8 @@ import os.path as osp
 from typing import List
 
 from mmengine.dataset import BaseDataset
-
+from mmengine.logging import print_log
+import logging
 from mmrotate.registry import DATASETS
 
 
@@ -28,7 +29,11 @@ class DOTADataset(BaseDataset):
         ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service','Fishing_1', 'Transport_1', 'Speedboat_1', 'Voilier_1', 'Military_1','Service_1'),
         # palette is a list of color tuples, which is used for visualization.
         'palette': [(165, 42, 42), (189, 183, 107), (0, 255, 0), (255, 0, 0),
-                    (138, 43, 226), (255, 128, 0), ]
+                    (138, 43, 226), (255, 128, 0), (255, 0, 255),
+                    (0, 255, 255), (255, 193, 193), (0, 51, 153),
+                    (255, 250, 205), (0, 139, 139), (255, 255, 0),
+                    (147, 116, 116), (0, 0, 255), (220, 20, 60), (119, 11, 32),
+                    (0, 0, 142)]
     }
 
     def __init__(self,
@@ -129,6 +134,188 @@ class DOTADataset(BaseDataset):
 
         instances = self.get_data_info(idx)['instances']
         return [instance['bbox_label'] for instance in instances]
+
+@DATASETS.register_module()
+class DOTADatasetML(BaseDataset):
+    """DOTA-v1.0 dataset for detection.
+
+    Note: ``ann_file`` in DOTADataset is different from the BaseDataset.
+    In BaseDataset, it is the path of an annotation file. In DOTADataset,
+    it is the path of a folder containing XML files.
+
+    Args:
+        diff_thr (int): The difficulty threshold of ground truth. Bboxes
+            with difficulty higher than it will be ignored. The range of this
+            value should be non-negative integer. Defaults to 100.
+        img_suffix (str): The suffix of images. Defaults to 'png'.
+    """
+    #classes = ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service')
+    METAINFO = {
+        'classes_1':
+        ('Fishing', 'apzoegih','Transport', 'Speedboat', 'Voilier', 'Military','Service'),
+        'classes_2':
+        ('Mouvement', 'Stationnaire'),
+        # palette is a list of color tuples, which is used for visualization.
+        'palette': [(165, 42, 42), (189, 183, 107), (0, 255, 0), (255, 0, 0),
+                    (138, 43, 226), (255, 128, 0)]
+    }
+
+    def __init__(self,
+                 diff_thr: int = 100,
+                 img_suffix: str = 'png',
+                 **kwargs) -> None:
+        self.diff_thr = diff_thr
+        self.img_suffix = img_suffix
+        super().__init__(**kwargs)
+
+    def load_data_list(self) -> List[dict]:
+        """Load annotations from an annotation file named as ``self.ann_file``
+        Returns:
+            List[dict]: A list of annotation.
+        """  # noqa: E501
+        cls_map_1 = {c: i
+                   for i, c in enumerate(self.metainfo['classes_1'])
+                   }  # in mmdet v2.0 label is 0-based
+        cls_map_2 = {c: i
+                     for i, c in enumerate(self.metainfo['classes_2'])
+                        } 
+
+        data_list = []
+        if self.ann_file == '':
+            img_files = glob.glob(
+                osp.join(self.data_prefix['img_path'], f'*.{self.img_suffix}'))
+            for img_path in img_files:
+                data_info = {}
+                data_info['img_path'] = img_path
+                img_name = osp.split(img_path)[1]
+                data_info['file_name'] = img_name
+                img_id = img_name[:-4]
+                data_info['img_id'] = img_id
+
+                instance = dict(bbox=[], bbox_label=[], ignore_flag=0)
+                data_info['instances'] = [instance]
+                data_list.append(data_info)
+
+            return data_list
+        else:
+            txt_files = glob.glob(osp.join(self.ann_file, '*.txt'))
+            if len(txt_files) == 0:
+                raise ValueError('There is no txt file in '
+                                 f'{self.ann_file}')
+            for txt_file in txt_files:
+                data_info = {}
+                img_id = osp.split(txt_file)[1][:-4]
+                data_info['img_id'] = img_id
+                img_name = img_id + f'.{self.img_suffix}'
+                data_info['file_name'] = img_name
+                data_info['img_path'] = osp.join(self.data_prefix['img_path'],
+                                                 img_name)
+
+                instances = []
+                with open(txt_file) as f:
+                    s = f.readlines()
+                    for si in s:
+                        instance = {}
+                        bbox_info = si.split()
+                        instance['bbox'] = [float(i) for i in bbox_info[:8]]
+                        cls_name_1 = bbox_info[8]
+                        instance['bbox_label_1'] = cls_map_1[cls_name_1]
+                        cls_name_2 = bbox_info[9]
+                        instance['bbox_label_2'] = cls_map_2[cls_name_2]
+                        difficulty = int(bbox_info[10])
+                        if difficulty > self.diff_thr:
+                            instance['ignore_flag'] = 1
+                        else:
+                            instance['ignore_flag'] = 0
+                        instances.append(instance)
+                data_info['instances'] = instances
+                data_list.append(data_info)
+
+            return data_list
+
+    def filter_data(self) -> List[dict]:
+        """Filter annotations according to filter_cfg.
+
+        Returns:
+            List[dict]: Filtered results.
+        """
+        if self.test_mode:
+            return self.data_list
+
+        filter_empty_gt = self.filter_cfg.get('filter_empty_gt', False) \
+            if self.filter_cfg is not None else False
+
+        valid_data_infos = []
+        for i, data_info in enumerate(self.data_list):
+            if filter_empty_gt and len(data_info['instances']) == 0:
+                continue
+            valid_data_infos.append(data_info)
+
+        return valid_data_infos
+
+    def get_cat_ids(self, idx: int) -> List[int]:
+        """Get DOTA category ids by index.
+
+        Args:
+            idx (int): Index of data.
+        Returns:
+            List[int]: All categories in the image of specified index.
+        """
+
+        instances = self.get_data_info(idx)['instances']
+        return [instance['bbox_label'] for instance in instances]
+    def __getitem__(self, idx: int) -> dict:
+        """Get the idx-th image and data information of dataset after
+        ``self.pipeline``, and ``full_init`` will be called if the dataset has
+        not been fully initialized.
+
+        During training phase, if ``self.pipeline`` get ``None``,
+        ``self._rand_another`` will be called until a valid image is fetched or
+         the maximum limit of refetech is reached.
+
+        Args:
+            idx (int): The index of self.data_list.
+
+        Returns:
+            dict: The idx-th image and data information of dataset after
+            ``self.pipeline``.
+        """
+        # Performing full initialization by calling `__getitem__` will consume
+        # extra memory. If a dataset is not fully initialized by setting
+        # `lazy_init=True` and then fed into the dataloader. Different workers
+        # will simultaneously read and parse the annotation. It will cost more
+        # time and memory, although this may work. Therefore, it is recommended
+        # to manually call `full_init` before dataset fed into dataloader to
+        # ensure all workers use shared RAM from master process.
+        if not self._fully_initialized:
+            print_log(
+                'Please call `full_init()` method manually to accelerate '
+                'the speed.',
+                logger='current',
+                level=logging.WARNING)
+            self.full_init()
+
+        if self.test_mode:
+            data = self.prepare_data(idx)
+            if data is None:
+                raise Exception('Test time pipline should not get `None` '
+                                'data_sample')
+        
+            return data
+
+        for _ in range(self.max_refetch + 1):
+            data = self.prepare_data(idx)
+            # Broken images or random augmentations may cause the returned data
+            # to be None
+            if data is None:
+                idx = self._rand_another()
+                continue
+            
+            return data
+
+        raise Exception(f'Cannot find valid image after {self.max_refetch}! '
+                        'Please check your image path and pipeline')
+    
 
 
 @DATASETS.register_module()

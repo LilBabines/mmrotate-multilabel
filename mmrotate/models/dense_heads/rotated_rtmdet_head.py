@@ -924,7 +924,7 @@ class RotatedRTMDetSepBNHead(RotatedRTMDetHead):
         (batch_gt_instances, batch_gt_instances_ignore,
          batch_img_metas) = outputs
         
-
+        print('batch_gt_instances:', batch_gt_instances)
         losses = self.loss_by_feat(cls_scores=cls_scores,
                                    bbox_preds=bbox_preds,
                                    angle_preds=angle_preds,
@@ -1344,9 +1344,34 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
         
         return tuple(cls_scores), tuple(bbox_preds), tuple(angle_preds)
     
+    def loss(self, x: Tuple[Tensor], batch_data_samples: SampleList) -> dict:
+        """Perform forward propagation and loss calculation of the detection
+        head on the features of the upstream network.
 
+        Args:
+            x (tuple[Tensor]): Features from the upstream network, each is
+                a 4D-tensor.
+            batch_data_samples (List[:obj:`DetDataSample`]): The Data
+                Samples. It usually includes information such as
+                `gt_instance`, `gt_panoptic_seg` and `gt_sem_seg`.
 
-    
+        Returns:
+            dict: A dictionary of loss components.
+        """
+        outs = self(x)
+        print("-------------DAAAATAAAAAA --------------")
+        print(batch_data_samples)
+        outputs = unpack_gt_instances(batch_data_samples)
+        (batch_gt_instances, batch_gt_instances_ignore,
+         batch_img_metas) = outputs
+
+        print('batch_gt_instances:', batch_gt_instances)
+        loss_inputs = outs + (batch_gt_instances, batch_img_metas,
+                              batch_gt_instances_ignore)
+        
+        losses = self.loss_by_feat(*loss_inputs)
+        return losses
+
     
     def loss_by_feat_single(self, cls_score: Tensor, bbox_pred: Tensor,
                             angle_pred: Tensor, labels: Tensor,
@@ -1443,5 +1468,3 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
 
         return (loss_cls, loss_bbox, loss_angle, assign_metrics.sum(),
                 pos_bbox_weight.sum(), pos_bbox_weight.sum())
-
-    

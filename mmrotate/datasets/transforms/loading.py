@@ -3,10 +3,52 @@ from typing import Sequence, Union
 
 import mmcv
 from mmcv.transforms import BaseTransform
+from mmdet.datasets.transforms import LoadAnnotations
+import numpy as np
 
 from mmrotate.registry import TRANSFORMS
 
+@TRANSFORMS.register_module()
+class LoadAnnotationML(LoadAnnotations):
 
+    def __init__(
+            self,
+            with_mask: bool = False,
+            poly2mask: bool = True,
+            box_type: str = 'hbox',
+            # use for semseg
+            reduce_zero_label: bool = False,
+            ignore_index: int = 255,
+            **kwargs) -> None:
+        super(LoadAnnotationML, self).__init__(
+            with_mask=with_mask,
+            poly2mask=poly2mask,
+            box_type=box_type,
+            reduce_zero_label=reduce_zero_label,
+            ignore_index=ignore_index,
+            **kwargs)
+    
+    def _load_labels(self, results: dict) -> None:
+        """Private function to load label annotations.
+
+        Args:
+            results (dict): Result dict from :obj:``mmengine.BaseDataset``.
+
+        Returns:
+            dict: The dict contains loaded label annotations.
+        """
+        gt_bboxes_labels_1 = []
+        gt_bboxes_labels_2 = []
+        for instance in results.get('instances', []):
+            gt_bboxes_labels_1.append(instance['bbox_label_1'])
+            gt_bboxes_labels_2.append(instance['bbox_label_2'])
+        # TODO: Inconsistent with mmcv, consider how to deal with it later.
+        results['gt_bboxes_labels'] = np.array(
+            gt_bboxes_labels_1, dtype=np.int64)
+        results['gt_bboxes_labels_2'] = np.array(
+            gt_bboxes_labels_2, dtype=np.int64)
+        
+        
 @TRANSFORMS.register_module()
 class LoadPatchFromNDArray(BaseTransform):
     """Load a patch from the huge image w.r.t ``results['patch']``.

@@ -1,6 +1,6 @@
 _base_ = [
-    './_base_/default_runtime.py', './_base_/schedule_3x.py',
-    './_base_/dota_rr.py'
+    './default_runtime.py', './schedule_3x.py',
+    './dota_rr.py'
 ]
 checkpoint = 'https://download.openmmlab.com/mmdetection/v3.0/rtmdet/cspnext_rsb_pretrain/cspnext-l_8xb256-rsb-a1-600e_in1k-6a760974.pth'  # noqa
 
@@ -66,7 +66,7 @@ model = dict(
         act_cfg=dict(type='SiLU')),
     train_cfg=dict(
         assigner=dict(
-            type='mmdet.DynamicSoftLabelAssigner',
+            type='DynamicSoftLabelAssignerML',
             iou_calculator=dict(type='RBboxOverlaps2D'),
             topk=13),
         allowed_border=-1,
@@ -81,4 +81,4 @@ model = dict(
 )
 
 # batch_size = (2 GPUs) x (4 samples per GPU) = 8
-train_dataloader = dict(batch_size=4, num_workers=4)
+train_dataloader = dict(batch_size=1, num_workers=4)

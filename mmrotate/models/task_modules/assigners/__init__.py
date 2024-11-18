@@ -7,8 +7,9 @@ from .rotate_iou2d_calculator import (FakeRBboxOverlaps2D,
 from .rotated_atss_assigner import RotatedATSSAssigner
 from .sas_assigner import SASAssigner
 
+from .dynamic_soft_label_assigner import DynamicSoftLabelAssignerML
 __all__ = [
     'ConvexAssigner', 'MaxConvexIoUAssigner', 'SASAssigner',
     'RotatedATSSAssigner', 'RBboxOverlaps2D', 'FakeRBboxOverlaps2D',
-    'RBbox2HBboxOverlaps2D', 'QBbox2HBboxOverlaps2D'
+    'RBbox2HBboxOverlaps2D', 'QBbox2HBboxOverlaps2D', 'DynamicSoftLabelAssignerML'
 ]

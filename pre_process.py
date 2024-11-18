@@ -1,5 +1,6 @@
 import os
 from PIL import Image
+import random
 
 int_to_labels = {
     0: 'Fishing',
@@ -8,9 +9,11 @@ int_to_labels = {
   3: 'Voilier',
   4: 'Military',
   5: 'Service',
-  6: 'Mouvement',
-  7: 'Stationnaire',
 }
+
+int_to_labels_2 = {
+    6: 'Mouvement',
+    7: 'Stationnaire',}
 def convert_to_dota(annotation, img_width, img_height):
     """
     Converts a normalized annotation to DOTA format for a specific image size.
@@ -25,7 +28,7 @@ def convert_to_dota(annotation, img_width, img_height):
     - dota_annotation (str): Annotation in the DOTA format as a string.
     """
     label = annotation[0]
-    difficulty = annotation[1]
+    label_2 = annotation[1]
     
     # Convert normalized coordinates to absolute pixel values
     x1 = annotation[2] * img_width
@@ -37,7 +40,7 @@ def convert_to_dota(annotation, img_width, img_height):
     x4 = annotation[8] * img_width
     y4 = annotation[9] * img_height
     
-    return f"{x1:.1f} {y1:.1f} {x2:.1f} {y2:.1f} {x3:.1f} {y3:.1f} {x4:.1f} {y4:.1f} {int_to_labels[int(label)]} {0}"
+    return f"{x1:.1f} {y1:.1f} {x2:.1f} {y2:.1f} {x3:.1f} {y3:.1f} {x4:.1f} {y4:.1f} {int_to_labels[int(label)]} {int_to_labels_2[int(label_2)]}  {0}"
 
 
 def process_annotations(img_dir, annot_dir, output_dir):
@@ -97,8 +100,8 @@ def process_annotations(img_dir, annot_dir, output_dir):
 
 
 # Example usage
-img_dir = 'data/Images'          # Replace with your image directory path
+img_dir = 'data/dota_ml/Images'          # Replace with your image directory path
 annot_dir = 'data/multilabel'    # Replace with your annotation directory path
-output_dir = 'data/label'       # Replace with your output directory path
+output_dir = 'data/dota_ml/label'       # Replace with your output directory path
 
 process_annotations(img_dir, annot_dir, output_dir)

@@ -137,3 +137,5 @@ ssdd_tiny/
 *.json
 
 *checkpoint
+
+rtmdet/
