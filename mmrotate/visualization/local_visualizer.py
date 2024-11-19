@@ -59,7 +59,10 @@ class RotLocalVisualizer(DetLocalVisualizer):
 
         if 'bboxes' in instances:
             bboxes = instances.bboxes
-            labels = instances.labels
+            try :
+                labels = instances.labels
+            except AttributeError:
+                labels = instances.labels_1
 
             max_label = int(max(labels) if len(labels) > 0 else 0)
             text_palette = get_palette(self.text_color, max_label + 1)

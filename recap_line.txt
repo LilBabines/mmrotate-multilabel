@@ -1,6 +1,6 @@
 python tools/train.py configs/rotated_rtmdet/rotated_rtmdet_l-3x-dota.py --work-dir="./rtmdet/"
 
-python ./tools/test.py \
-  configs/rotated_rtmdet/rotated_rtmdet_l-3x-dota.py \
-  checkpoints/SOME_CHECKPOINT.pth \
-  --show-dir work_dirs/vis
+python ./tools/test.py custom_configs/rotated_rtmdet_l-3x-dota.py rtmdet/epoch_300.pth --show-dir work_dirs/vis
+
+
+Mean: [63.15447236 81.52741969 78.54256743]

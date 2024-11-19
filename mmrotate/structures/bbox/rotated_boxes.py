@@ -189,7 +189,8 @@ class RotatedBoxes(BaseBoxes):
         Args:
             img_shape (Tuple[int, int]): A tuple of image height and width.
         """
-        warnings.warn('The `clip` function does nothing in `RotatedBoxes`.')
+        pass
+        #warnings.warn('The `clip` function does nothing in `RotatedBoxes`.')
 
     def rotate_(self, center: Tuple[float, float], angle: float) -> None:
         """Rotate all boxes in-place.

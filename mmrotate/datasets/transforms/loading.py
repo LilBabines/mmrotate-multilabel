@@ -43,7 +43,7 @@ class LoadAnnotationML(LoadAnnotations):
             gt_bboxes_labels_1.append(instance['bbox_label_1'])
             gt_bboxes_labels_2.append(instance['bbox_label_2'])
         # TODO: Inconsistent with mmcv, consider how to deal with it later.
-        results['gt_bboxes_labels'] = np.array(
+        results['gt_bboxes_labels_1'] = np.array(
             gt_bboxes_labels_1, dtype=np.int64)
         results['gt_bboxes_labels_2'] = np.array(
             gt_bboxes_labels_2, dtype=np.int64)

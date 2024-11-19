@@ -149,15 +149,16 @@ class DOTADatasetML(BaseDataset):
             value should be non-negative integer. Defaults to 100.
         img_suffix (str): The suffix of images. Defaults to 'png'.
     """
-    #classes = ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service')
+    classes = ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service','Mouvement', 'Stationnaire')
     METAINFO = {
+        'classes' : ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service','Mouvement', 'Stationnaire'),
         'classes_1':
-        ('Fishing', 'apzoegih','Transport', 'Speedboat', 'Voilier', 'Military','Service'),
+        ('Fishing','Transport', 'Speedboat', 'Voilier', 'Military','Service'),
         'classes_2':
         ('Mouvement', 'Stationnaire'),
         # palette is a list of color tuples, which is used for visualization.
         'palette': [(165, 42, 42), (189, 183, 107), (0, 255, 0), (255, 0, 0),
-                    (138, 43, 226), (255, 128, 0)]
+                    (138, 43, 226), (255, 128, 0), (255, 0, 255),(0, 255, 255)]
     }
 
     def __init__(self,
@@ -300,9 +301,7 @@ class DOTADatasetML(BaseDataset):
             if data is None:
                 raise Exception('Test time pipline should not get `None` '
                                 'data_sample')
-            print("before propess")
-            print(data)
-            print('-------------')
+            
             return data
 
         for _ in range(self.max_refetch + 1):
@@ -312,9 +311,7 @@ class DOTADatasetML(BaseDataset):
             if data is None:
                 idx = self._rand_another()
                 continue
-            print("before propess")
-            print(data)
-            print('-------------')
+            
             return data
 
         raise Exception(f'Cannot find valid image after {self.max_refetch}! '

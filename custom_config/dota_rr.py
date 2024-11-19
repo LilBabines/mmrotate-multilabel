@@ -2,7 +2,7 @@
 dataset_type = 'DOTADatasetML'
 data_root = 'data/dota_ml/'
 backend_args = None
-classes = ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service')
+classes = ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service','Mouvement', 'Stationnaire')
 
 
 train_pipeline = [
@@ -16,13 +16,13 @@ train_pipeline = [
         direction=['horizontal', 'vertical', 'diagonal']),
     dict(
         type='RandomRotateML',
-        prob=0.5,
+       prob=0.5,
         angle_range=180,
-        rect_obj_labels=[9, 11]),
+       rect_obj_labels=[9, 11]),
     dict(
-        type='mmdet.Pad', size=(1024, 1024),
-        pad_val=dict(img=(114, 114, 114))),
-    dict(type='mmdet.PackDetInputs')
+       type='mmdet.Pad', size=(1024, 1024),
+       pad_val=dict(img=(114, 114, 114))),
+    dict(type='PackDetInputsML')
 ]
 val_pipeline = [
     dict(type='mmdet.LoadImageFromFile', backend_args=backend_args),
@@ -34,7 +34,7 @@ val_pipeline = [
         type='mmdet.Pad', size=(1024, 1024),
         pad_val=dict(img=(114, 114, 114))),
     dict(
-        type='mmdet.PackDetInputs',
+        type='PackDetInputsML',
         meta_keys=('img_id', 'img_path', 'ori_shape', 'img_shape',
                    'scale_factor'))
 ]
@@ -45,7 +45,7 @@ test_pipeline = [
         type='mmdet.Pad', size=(1024, 1024),
         pad_val=dict(img=(114, 114, 114))),
     dict(
-        type='mmdet.PackDetInputs',
+        type='PackDetInputsML',
         meta_keys=('img_id', 'img_path', 'ori_shape', 'img_shape',
                    'scale_factor'))
 ]
@@ -78,7 +78,7 @@ val_dataloader = dict(
         pipeline=val_pipeline))
 test_dataloader = val_dataloader
 
-val_evaluator = dict(type='DOTAMetric', metric='mAP')
+val_evaluator = dict(type='DOTAMetricsML', metric='mAP')
 test_evaluator = val_evaluator
 
 # inference on test dataset and format the output results

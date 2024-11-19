@@ -136,7 +136,7 @@ def get_cls_results(det_results, annotations, class_id, box_type):
     cls_gts_ignore = []
     for ann in annotations:
         if len(ann['bboxes']) != 0:
-            gt_inds = ann['labels'] == class_id
+            gt_inds = ann['labels_1'] == class_id
             cls_gts.append(ann['bboxes'][gt_inds, :])
             ignore_inds = ann['labels_ignore'] == class_id
             cls_gts_ignore.append(ann['bboxes_ignore'][ignore_inds, :])

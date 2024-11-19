@@ -155,7 +155,7 @@ class QualityFocalLoss(nn.Module):
                  loss_weight=1.0,
                  activated=False,
                  num_classes_1=6,
-                 num_classes_2=6,):
+                 num_classes_2=2,):
         super(QualityFocalLoss, self).__init__()
         assert use_sigmoid is True, 'Only sigmoid in QFL supported now.'
         self.use_sigmoid = use_sigmoid
@@ -214,13 +214,7 @@ class QualityFocalLoss(nn.Module):
                 avg_factor=avg_factor)
             loss_cls = self.loss_weight * loss
 
-            print('QualityFocalLoss loss_cls:', loss_cls)
-            print()
-            print('pred', pred.shape, pred.min().cpu().detach().numpy(), pred.max().cpu().detach().numpy(), pred.mean().cpu().detach().numpy())
-            print('target', target[0].shape, target[0].min().cpu().detach().numpy(), target[0].max().cpu().detach().numpy())
-            print('target', target[1].shape, target[1].min().cpu().detach().numpy(), target[1].max().cpu().detach().numpy(), target[1].mean().cpu().detach().numpy())
-            print('weight', weight.shape, weight.min().cpu().detach().numpy(), weight.max().cpu().detach().numpy(), weight.mean().mean().cpu().detach().numpy())
-            print("------------------")
+        
         else:
             raise NotImplementedError
         return loss_cls

@@ -61,6 +61,8 @@ class DynamicSoftLabelAssignerML(BaseAssigner):
         self.topk = topk
         self.iou_weight = iou_weight
         self.iou_calculator = TASK_UTILS.build(iou_calculator)
+        self.num_labels_1 = 6
+        self.num_labels_2 = 2
 
     def assign(self,
                pred_instances: InstanceData,
@@ -87,9 +89,13 @@ class DynamicSoftLabelAssignerML(BaseAssigner):
         Returns:
             obj:`AssignResult`: The assigned result.
         """
+        
         gt_bboxes = gt_instances.bboxes
         
-        gt_labels = gt_instances.labels
+        
+        gt_labels_1 = gt_instances.labels_1
+        gt_labels_2 = gt_instances.labels_2
+        
         num_gt = gt_bboxes.size(0)
 
         decoded_bboxes = pred_instances.bboxes
@@ -154,18 +160,38 @@ class DynamicSoftLabelAssignerML(BaseAssigner):
         pairwise_ious = self.iou_calculator(valid_decoded_bbox, gt_bboxes)
         iou_cost = -torch.log(pairwise_ious + EPS) * self.iou_weight
 
-        gt_onehot_label = (
-            F.one_hot(gt_labels.to(torch.int64),
-                      pred_scores.shape[-1]).float().unsqueeze(0).repeat(
+        gt_onehot_label_1 = (
+            F.one_hot(gt_labels_1.to(torch.int64),
+                      self.num_labels_1).float().unsqueeze(0).repeat(
                           num_valid, 1, 1))
+        gt_onehot_label_2 = (
+            F.one_hot(gt_labels_2.to(torch.int64),
+                      self.num_labels_2).float().unsqueeze(0).repeat(
+                          num_valid, 1, 1))
+        
         valid_pred_scores = valid_pred_scores.unsqueeze(1).repeat(1, num_gt, 1)
+        soft_label_1 = gt_onehot_label_1 * pairwise_ious[..., None]
+        soft_label_2 = gt_onehot_label_2 * pairwise_ious[..., None]
 
-        soft_label = gt_onehot_label * pairwise_ious[..., None]
-        scale_factor = soft_label - valid_pred_scores.sigmoid()
-        soft_cls_cost = F.binary_cross_entropy_with_logits(
-            valid_pred_scores, soft_label,
-            reduction='none') * scale_factor.abs().pow(2.0)
-        soft_cls_cost = soft_cls_cost.sum(dim=-1)
+        assert self.num_labels_1+self.num_labels_2 == valid_pred_scores.shape[-1]
+        valid_pred_scores_1 = valid_pred_scores[:, :, :self.num_labels_1]
+        valid_pred_scores_2 = valid_pred_scores[:, :, self.num_labels_1:]
+
+        scale_factor_1 = soft_label_1 - valid_pred_scores_1.sigmoid()
+        scale_factor_2 = soft_label_2 - valid_pred_scores_2.sigmoid()
+
+        
+        soft_cls_cost_1 = F.binary_cross_entropy_with_logits(
+            valid_pred_scores_1, soft_label_1,
+            reduction='none') * scale_factor_1.abs().pow(2.0)
+        soft_cls_cost_1 = soft_cls_cost_1.sum(dim=-1)
+
+        soft_cls_cost_2 = F.binary_cross_entropy_with_logits(
+            valid_pred_scores_2, soft_label_2,
+            reduction='none') * scale_factor_2.abs().pow(2.0)
+        soft_cls_cost_2 = soft_cls_cost_2.sum(dim=-1)
+
+        soft_cls_cost = (soft_cls_cost_1 + soft_cls_cost_2 ) / 2.0
 
         cost_matrix = soft_cls_cost + iou_cost + soft_center_prior
 
@@ -174,12 +200,19 @@ class DynamicSoftLabelAssignerML(BaseAssigner):
 
         # convert to AssignResult format
         assigned_gt_inds[valid_mask] = matched_gt_inds + 1
-        assigned_labels = assigned_gt_inds.new_full((num_bboxes, ), -1)
-        assigned_labels[valid_mask] = gt_labels[matched_gt_inds].long()
+
+        assigned_labels_1 = assigned_gt_inds.new_full((num_bboxes, ), -1)
+        assigned_labels_1[valid_mask] = gt_labels_1[matched_gt_inds].long()
+
+        assigned_labels_2 = assigned_gt_inds.new_full((num_bboxes, ), -1)
+        assigned_labels_2[valid_mask] = gt_labels_2[matched_gt_inds].long()
+
+        assigned_labels = torch.cat([assigned_labels_1[:, None], assigned_labels_2[:, None]], dim=1)
         max_overlaps = assigned_gt_inds.new_full((num_bboxes, ),
                                                  -INF,
                                                  dtype=torch.float32)
         max_overlaps[valid_mask] = matched_pred_ious
+        
         return AssignResult(
             num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels)
 

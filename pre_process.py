@@ -98,10 +98,42 @@ def process_annotations(img_dir, annot_dir, output_dir):
         
         print(f"Processed {img_file} and saved DOTA annotations to {output_path}")
 
+import os
+import numpy as np
+from PIL import Image
+
+def calculate_mean_std(directory_path):
+    means = []
+    stds = []
+
+
+    for filename in os.listdir(directory_path):
+        file_path = os.path.join(directory_path, filename)
+        
+        # Load image
+        image = Image.open(file_path).convert("RGB")  # Ensure 3 channels
+        image_array = np.array(image)  # Raw pixel values [0, 255]
+        m = np.mean(image_array, axis=(0, 1))
+        s = np.std(image_array, axis=(0, 1))
+
+        means.append(m)
+        stds.append(s)
+
+    mean = np.mean(means, axis=0)
+    std = np.mean(stds, axis=0)
+    return mean, std
+
+directory_path = "data/dota_ml/Images"  # Replace with your directory
+mean, std = calculate_mean_std(directory_path)
+print(f"Mean: {mean}")
+print(f"Std: {std}")
+
+
+
 
 # Example usage
 img_dir = 'data/dota_ml/Images'          # Replace with your image directory path
 annot_dir = 'data/multilabel'    # Replace with your annotation directory path
 output_dir = 'data/dota_ml/label'       # Replace with your output directory path
 
-process_annotations(img_dir, annot_dir, output_dir)
+#process_annotations(img_dir, annot_dir, output_dir)

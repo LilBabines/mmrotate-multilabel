@@ -351,3 +351,174 @@ class DOTAMetric(BaseMetric):
         else:
             raise NotImplementedError
         return eval_results
+    
+@METRICS.register_module()
+class DOTAMetricsML(DOTAMetric):
+    def __init__(self,
+                 iou_thrs: Union[float, List[float]] = 0.5,
+                 scale_ranges: Optional[List[tuple]] = None,
+                 metric: Union[str, List[str]] = 'mAP',
+                 predict_box_type: str = 'rbox',
+                 format_only: bool = False,
+                 outfile_prefix: Optional[str] = None,
+                 merge_patches: bool = False,
+                 iou_thr: float = 0.1,
+                 eval_mode: str = '11points',
+                 collect_device: str = 'cpu',
+                 prefix: Optional[str] = None) -> None:
+        super().__init__(iou_thrs, scale_ranges, metric, predict_box_type,
+                         format_only, outfile_prefix, merge_patches, iou_thr,
+                         eval_mode, collect_device, prefix)
+        
+    def process(self, data_batch: Sequence[dict],
+                data_samples: Sequence[dict]) -> None:
+        """Process one batch of data samples and predictions. The processed
+        results should be stored in ``self.results``, which will be used to
+        compute the metrics when all batches have been processed.
+
+        Args:
+            data_batch (dict): A batch of data from the dataloader.
+            data_samples (Sequence[dict]): A batch of data samples that
+                contain annotations and predictions.
+        """
+        for data_sample in data_samples:
+            gt = copy.deepcopy(data_sample)
+            gt_instances = gt['gt_instances']
+            gt_ignore_instances = gt['ignored_instances']
+            if gt_instances == {}:
+                ann = dict()
+            else:
+                ann = dict(
+                    labels_1=gt_instances['labels_1'].cpu().numpy(),
+                    labels_2=gt_instances['labels_2'].cpu().numpy(),
+                    bboxes=gt_instances['bboxes'].cpu().numpy(),
+                    bboxes_ignore=gt_ignore_instances['bboxes'].cpu().numpy(),
+                    labels_ignore=gt_ignore_instances['labels_1'].cpu().numpy())
+
+            result = dict()
+            pred = data_sample['pred_instances']
+            result['img_id'] = data_sample['img_id']
+            result['bboxes'] = pred['bboxes'].cpu().numpy()
+            
+            
+            result['scores'] = pred['scores'].cpu().numpy()
+            
+            result['labels_1'] = pred['labels'].cpu().numpy()#[:,0]
+            #result['labels_2'] = pred['labels'].cpu().numpy()[:,1]
+
+            result['pred_bbox_scores'] = []
+            
+            
+            for label in range(len(self.dataset_meta['classes_1'])):
+                index = np.where(result['labels_1'] == label)[0]
+                pred_bbox_scores = np.hstack([
+                    result['bboxes'][index], result['scores'][index].reshape(
+                        (-1, 1))
+                ])
+                result['pred_bbox_scores'].append(pred_bbox_scores)
+
+            self.results.append((ann, result))
+
+    def results2json(self, results: Sequence[dict],
+                     outfile_prefix: str) -> dict:
+        """Dump the detection results to a COCO style json file.
+
+        There are 3 types of results: proposals, bbox predictions, mask
+        predictions, and they have different data types. This method will
+        automatically recognize the type, and dump them to json files.
+
+        Args:
+            results (Sequence[dict]): Testing results of the
+                dataset.
+            outfile_prefix (str): The filename prefix of the json files. If the
+                prefix is "somepath/xxx", the json files will be named
+                "somepath/xxx.bbox.json", "somepath/xxx.segm.json",
+                "somepath/xxx.proposal.json".
+
+        Returns:
+            dict: Possible keys are "bbox", "segm", "proposal", and
+            values are corresponding filenames.
+        """
+        bbox_json_results = []
+        for idx, result in enumerate(results):
+            image_id = result.get('img_id', idx)
+            labels_1 = result['labels_1']
+            #labels_2 = result['labels_2']
+            bboxes = result['bboxes']
+            scores = result['scores']
+            # bbox results
+            for i, label_1 in enumerate(labels_1):
+                data = dict()
+                data['image_id'] = image_id
+                data['bbox'] = bboxes[i].tolist()
+                data['score'] = float(scores[i])
+                data['category_1_id'] = int(label_1)
+                #data['category_2_id'] = int(label_2)
+                bbox_json_results.append(data)
+
+        result_files = dict()
+        result_files['bbox'] = f'{outfile_prefix}.bbox.json'
+        dump(bbox_json_results, result_files['bbox'])
+
+        return result_files
+    
+    def compute_metrics(self, results: list) -> dict:
+        """Compute the metrics from processed results.
+
+        Args:
+            results (list): The processed results of each batch.
+        Returns:
+            dict: The computed metrics. The keys are the names of the metrics,
+            and the values are corresponding results.
+        """
+        logger: MMLogger = MMLogger.get_current_instance()
+        gts, preds = zip(*results)
+
+        tmp_dir = None
+        if self.outfile_prefix is None:
+            tmp_dir = tempfile.TemporaryDirectory()
+            outfile_prefix = osp.join(tmp_dir.name, 'results')
+        else:
+            outfile_prefix = self.outfile_prefix
+
+        eval_results = OrderedDict()
+        if self.merge_patches:
+            # convert predictions to txt format and dump to zip file
+            zip_path = self.merge_results(preds, outfile_prefix)
+            logger.info(f'The submission file save at {zip_path}')
+            return eval_results
+        else:
+            # convert predictions to coco format and dump to json file
+            _ = self.results2json(preds, outfile_prefix)
+            if self.format_only:
+                logger.info('results are saved in '
+                            f'{osp.dirname(outfile_prefix)}')
+                return eval_results
+
+        if self.metric == 'mAP':
+            assert isinstance(self.iou_thrs, list)
+            dataset_name = self.dataset_meta['classes_1']
+            dets = [pred['pred_bbox_scores'] for pred in preds]
+
+            mean_aps = []
+            for iou_thr in self.iou_thrs:
+                logger.info(f'\n{"-" * 15}iou_thr: {iou_thr}{"-" * 15}')
+                mean_ap, _ = eval_rbbox_map(
+                    dets,
+                    gts,
+                    scale_ranges=self.scale_ranges,
+                    iou_thr=iou_thr,
+                    use_07_metric=self.use_07_metric,
+                    box_type=self.predict_box_type,
+                    dataset=dataset_name,
+                    logger=logger)
+                mean_aps.append(mean_ap)
+                eval_results[f'AP{int(iou_thr * 100):02d}'] = round(mean_ap, 3)
+            eval_results['mAP'] = sum(mean_aps) / len(mean_aps)
+            eval_results.move_to_end('mAP', last=False)
+        else:
+            raise NotImplementedError
+        return eval_results
+    
+
+        
