@@ -26,14 +26,10 @@ class DOTADataset(BaseDataset):
     #classes = ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service')
     METAINFO = {
         'classes':
-        ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service','Fishing_1', 'Transport_1', 'Speedboat_1', 'Voilier_1', 'Military_1','Service_1'),
+        ('Fishing', 'Transport', 'Speedboat', 'Voilier', 'Military','Service'),
         # palette is a list of color tuples, which is used for visualization.
         'palette': [(165, 42, 42), (189, 183, 107), (0, 255, 0), (255, 0, 0),
-                    (138, 43, 226), (255, 128, 0), (255, 0, 255),
-                    (0, 255, 255), (255, 193, 193), (0, 51, 153),
-                    (255, 250, 205), (0, 139, 139), (255, 255, 0),
-                    (147, 116, 116), (0, 0, 255), (220, 20, 60), (119, 11, 32),
-                    (0, 0, 142)]
+                    (138, 43, 226), (255, 128, 0)]
     }
 
     def __init__(self,

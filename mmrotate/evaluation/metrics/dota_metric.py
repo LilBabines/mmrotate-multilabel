@@ -15,7 +15,7 @@ from mmengine.evaluator import BaseMetric
 from mmengine.fileio import dump
 from mmengine.logging import MMLogger
 
-from mmrotate.evaluation import eval_rbbox_map
+from mmrotate.evaluation import eval_rbbox_map, eval_rbbox_map_ML
 from mmrotate.registry import METRICS
 from mmrotate.structures.bbox import rbox2qbox
 
@@ -503,7 +503,7 @@ class DOTAMetricsML(DOTAMetric):
             mean_aps = []
             for iou_thr in self.iou_thrs:
                 logger.info(f'\n{"-" * 15}iou_thr: {iou_thr}{"-" * 15}')
-                mean_ap, _ = eval_rbbox_map(
+                mean_ap, _ = eval_rbbox_map_ML(
                     dets,
                     gts,
                     scale_ranges=self.scale_ranges,

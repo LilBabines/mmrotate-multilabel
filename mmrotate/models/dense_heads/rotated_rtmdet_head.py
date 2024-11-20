@@ -973,7 +973,6 @@ class RotatedRTMDetSepBNHead(RotatedRTMDetHead):
         (batch_gt_instances, batch_gt_instances_ignore,
          batch_img_metas) = outputs
         
-        print('batch_gt_instances:', batch_gt_instances)
         losses = self.loss_by_feat(cls_scores=cls_scores,
                                    bbox_preds=bbox_preds,
                                    angle_preds=angle_preds,
