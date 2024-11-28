@@ -3,6 +3,7 @@ import copy
 from typing import List, Optional, Tuple
 
 import torch
+import numpy as np
 from mmcv.cnn import ConvModule, Scale, is_norm
 from mmdet.models import inverse_sigmoid
 from mmdet.models.dense_heads import RTMDetHead
@@ -19,15 +20,20 @@ from mmengine.model import bias_init_with_prob, constant_init, normal_init
 from mmengine.structures import InstanceData
 from torch import Tensor, nn
 
+from mmdet.structures.bbox import ( get_box_tensor, get_box_wh,
+                                   scale_boxes)
+from mmcv.ops import batched_nms
+
 from mmrotate.registry import MODELS, TASK_UTILS
 from mmrotate.structures import RotatedBoxes, distance2obb
 
 ### mmdet.models.utlis.misc.py adaptation
-def filter_scores_and_topk_ML(scores_1, score_thr, topk, results=None):
-    """Filter results using score threshold and topk candidates.
+def filter_scores_and_topk_ML(scores_1, scores_2, score_thr, topk, results=None):
+    """Filter results using combined score threshold and topk candidates for multi-label predictions.
 
     Args:
-        scores (Tensor): The scores, shape (num_bboxes, K).
+        scores_1 (Tensor): The first set of scores, shape (num_bboxes, num_classes_1).
+        scores_2 (Tensor): The second set of scores, shape (num_bboxes, num_classes_2).
         score_thr (float): The score filter threshold.
         topk (int): The number of topk candidates.
         results (dict or list or Tensor, Optional): The results to
@@ -37,40 +43,54 @@ def filter_scores_and_topk_ML(scores_1, score_thr, topk, results=None):
     Returns:
         tuple: Filtered results
 
-            - scores (Tensor): The scores after being filtered, \
-                shape (num_bboxes_filtered, ).
-            - labels (Tensor): The class labels, shape \
-                (num_bboxes_filtered, ).
-            - anchor_idxs (Tensor): The anchor indexes, shape \
-                (num_bboxes_filtered, ).
-            - filtered_results (dict or list or Tensor, Optional): \
-                The filtered results. The shape of each item is \
-                (num_bboxes_filtered, N).
+            - combined_scores_filtered (Tensor): The filtered combined scores.
+            - labels_1_filtered (Tensor): Filtered class labels for scores_1.
+            - labels_2_filtered (Tensor): Filtered class labels for scores_2.
+            - valid_idxs (Tensor): The sorted valid indices.
+            - filtered_results (dict or list or Tensor, Optional): The filtered results.
     """
-    
-    valid_mask = scores_1 > score_thr
-    scores = scores_1[valid_mask]
-    valid_idxs = torch.nonzero(valid_mask)
+    import torch
 
+    # Combine scores
+    combined_scores = (scores_1.max(dim=1)[0] + scores_2.max(dim=1)[0])/2.0  # Take the max score per class and add
+
+    # Filter based on combined score threshold
+    valid_mask = combined_scores > score_thr
+    valid_idxs = torch.nonzero(valid_mask, as_tuple=False).squeeze(1)
+
+    # Sort valid indices by combined scores
+    valid_combined_scores = combined_scores[valid_mask]
+    sorted_scores, sort_order = valid_combined_scores.sort(descending=True)
+    valid_idxs = valid_idxs[sort_order]
+
+    # Limit to top-k
     num_topk = min(topk, valid_idxs.size(0))
-    # torch.sort is actually faster than .topk (at least on GPUs)
-    scores, idxs = scores.sort(descending=True)
-    scores = scores[:num_topk]
-    topk_idxs = valid_idxs[idxs[:num_topk]]
-    keep_idxs, labels = topk_idxs.unbind(dim=1)
-
+    valid_idxs = valid_idxs[:num_topk]
+    #sorted_scores = sorted_scores[:num_topk]
+    # Filter scores and labels
+    scores_1_filtered = scores_1[valid_idxs]
+    scores_2_filtered = scores_2[valid_idxs]
+    max_scores_1, labels_1 = scores_1_filtered.max(dim=1)
+    max_scores_2, labels_2 = scores_2_filtered.max(dim=1)
+    
+    # Filter additional results
     filtered_results = None
     if results is not None:
         if isinstance(results, dict):
-            filtered_results = {k: v[keep_idxs] for k, v in results.items()}
+            filtered_results = {k: v[valid_idxs] for k, v in results.items()}
         elif isinstance(results, list):
-            filtered_results = [result[keep_idxs] for result in results]
+            filtered_results = [result[valid_idxs] for result in results]
         elif isinstance(results, torch.Tensor):
-            filtered_results = results[keep_idxs]
+            filtered_results = results[valid_idxs]
         else:
-            raise NotImplementedError(f'Only supports dict or list or Tensor, '
-                                      f'but get {type(results)}.')
-    return scores, labels, keep_idxs, filtered_results
+            raise NotImplementedError(f'Only supports dict, list, or Tensor, '
+                                      f'but got {type(results)}.')
+    
+    return (
+        max_scores_1+max_scores_2, max_scores_1, max_scores_2 ,labels_1, labels_2, valid_idxs, filtered_results
+    )
+
+
 
 def unpack_gt_instances(batch_data_samples: SampleList) -> tuple:
     """Unpack ``gt_instances``, ``gt_instances_ignore`` and ``img_metas`` based
@@ -481,9 +501,10 @@ class RotatedRTMDetHead(RTMDetHead):
 
         assign_result = self.assigner.assign(pred_instances, gt_instances,
                                              gt_instances_ignore)
-
+        
         sampling_result = self.sampler.sample(assign_result, pred_instances,
                                               gt_instances)
+        
 
         num_valid_anchors = anchors.shape[0]
         bbox_targets = anchors.new_zeros((*anchors.size()[:-1], 5))
@@ -496,6 +517,10 @@ class RotatedRTMDetHead(RTMDetHead):
 
         pos_inds = sampling_result.pos_inds
         neg_inds = sampling_result.neg_inds
+
+        
+        
+
         if len(pos_inds) > 0:
             # point-based
             pos_bbox_targets = sampling_result.pos_gt_bboxes
@@ -503,6 +528,7 @@ class RotatedRTMDetHead(RTMDetHead):
                 self.angle_version)
             bbox_targets[pos_inds, :] = pos_bbox_targets
 
+            
             labels[pos_inds] = sampling_result.pos_gt_labels
             if self.train_cfg['pos_weight'] <= 0:
                 label_weights[pos_inds] = 1.0
@@ -518,7 +544,7 @@ class RotatedRTMDetHead(RTMDetHead):
                                      gt_inds]
             assign_metrics[gt_class_inds] = assign_result.max_overlaps[
                 gt_class_inds]
-
+        
         # map up to original set of anchors
         if unmap_outputs:
             num_total_anchors = flat_anchors.size(0)
@@ -1393,31 +1419,6 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
         
         
         return tuple(cls_scores), tuple(bbox_preds), tuple(angle_preds)
-    
-    def loss(self, x: Tuple[Tensor], batch_data_samples: SampleList) -> dict:
-        """Perform forward propagation and loss calculation of the detection
-        head on the features of the upstream network.
-
-        Args:
-            x (tuple[Tensor]): Features from the upstream network, each is
-                a 4D-tensor.
-            batch_data_samples (List[:obj:`DetDataSample`]): The Data
-                Samples. It usually includes information such as
-                `gt_instance`, `gt_panoptic_seg` and `gt_sem_seg`.
-
-        Returns:
-            dict: A dictionary of loss components.
-        """
-        outs = self(x)
-        
-        outputs = unpack_gt_instances(batch_data_samples)
-        (batch_gt_instances, batch_gt_instances_ignore,
-         batch_img_metas) = outputs
-        loss_inputs = outs + (batch_gt_instances, batch_img_metas,
-                              batch_gt_instances_ignore)
-        
-        losses = self.loss_by_feat(*loss_inputs)
-        return losses
 
     
     def loss_by_feat_single(self, cls_score: Tensor, bbox_pred: Tensor,
@@ -1448,13 +1449,17 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
             dict[str, Tensor]: A dictionary of loss components.
         """
         assert stride[0] == stride[1], 'h stride is not equal to w stride!'
-        cls_score = cls_score.permute(0, 2, 3, 1).reshape(
-            -1, self.cls_out_channels).contiguous()
+
+        cls_score_1= cls_score[:, :self.num_classes_1, ...]
+        cls_score_2 = cls_score[:, self.num_classes_1:, ...]
+
+
+        cls_score_1 = cls_score_1.permute(0, 2, 3, 1).reshape(
+            -1, self.cls_out_channels_1).contiguous()
+        cls_score_2 = cls_score_2.permute(0, 2, 3, 1).reshape(
+            -1, self.cls_out_channels_2).contiguous()
 
         
-        cls_score_1 = cls_score[:, :self.num_classes_1]
-        cls_score_2 = cls_score[:, self.num_classes_1:]
-
         
         label_1 = labels[...,0].reshape(-1)
         label_2 = labels[..., 1].reshape(-1)
@@ -1597,7 +1602,7 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
 
         assign_result = self.assigner.assign(pred_instances, gt_instances,
                                              gt_instances_ignore)
-
+        
 
         sampling_result = self.sampler.sample(assign_result, pred_instances,
                                               gt_instances)
@@ -1622,12 +1627,18 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
 
         pos_inds = sampling_result.pos_inds
         neg_inds = sampling_result.neg_inds
+
+        
+
         if len(pos_inds) > 0:
             # point-based
             pos_bbox_targets = sampling_result.pos_gt_bboxes
+            
             pos_bbox_targets = pos_bbox_targets.regularize_boxes(
                 self.angle_version)
             bbox_targets[pos_inds, :] = pos_bbox_targets
+
+
             labels_1[pos_inds] = sampling_result.pos_gt_labels[:,0]
             labels_2[pos_inds] = sampling_result.pos_gt_labels[:,1]
             if self.train_cfg['pos_weight'] <= 0:
@@ -1661,9 +1672,10 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
             
         
         labels = torch.stack([labels_1, labels_2], dim=-1)
-        
+
         return (anchors, labels, label_weights, bbox_targets, assign_metrics,
                 sampling_result)
+    
     def _predict_by_feat_single(self,
                                 cls_score_list: List[Tensor],
                                 bbox_pred_list: List[Tensor],
@@ -1727,7 +1739,9 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
         mlvl_bbox_preds = []
         mlvl_valid_priors = []
         mlvl_scores = []
-        mlvl_labels = []
+        
+        mlvl_labels_1 = []
+        mlvl_labels_2 = []
         if with_score_factors:
             mlvl_score_factors = []
         else:
@@ -1771,10 +1785,12 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
             score_thr = cfg.get('score_thr', 0)
 
             results = filter_scores_and_topk_ML(
-                scores_1, score_thr, nms_pre,
+                scores_1, scores_2, score_thr, nms_pre,
                 dict(
                     bbox_pred=bbox_pred, angle_pred=angle_pred, priors=priors))
-            scores, labels, keep_idxs, filtered_results = results
+            scores,scores_1, scores_2, labels_1, labels_2, keep_idxs, filtered_results = results
+            
+            
 
             bbox_pred = filtered_results['bbox_pred']
             angle_pred = filtered_results['angle_pred']
@@ -1786,11 +1802,14 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
             if with_score_factors:
                 score_factor = score_factor[keep_idxs]
 
+            
             mlvl_bbox_preds.append(bbox_pred)
             mlvl_valid_priors.append(priors)
             mlvl_scores.append(scores)
-            mlvl_labels.append(labels)
+            mlvl_labels_1.append(labels_1)
+            mlvl_labels_2.append(labels_2)
 
+        
             if with_score_factors:
                 mlvl_score_factors.append(score_factor)
 
@@ -1801,13 +1820,79 @@ class RotatedRTMDetSepBNHeadML(RotatedRTMDetHead):
         results = InstanceData()
         results.bboxes = RotatedBoxes(bboxes)
         results.scores = torch.cat(mlvl_scores)
-        results.labels = torch.cat(mlvl_labels)
+        results.labels_1 = torch.cat(mlvl_labels_1)
+        results.labels_2 = torch.cat(mlvl_labels_2)
         if with_score_factors:
             results.score_factors = torch.cat(mlvl_score_factors)
-
+        
         return self._bbox_post_process(
             results=results,
             cfg=cfg,
             rescale=rescale,
             with_nms=with_nms,
             img_meta=img_meta)
+    
+    def _bbox_post_process(self,
+                           results: InstanceData,
+                           cfg: ConfigDict,
+                           rescale: bool = False,
+                           with_nms: bool = True,
+                           img_meta: Optional[dict] = None) -> InstanceData:
+        """bbox post-processing method.
+
+        The boxes would be rescaled to the original image scale and do
+        the nms operation. Usually `with_nms` is False is used for aug test.
+
+        Args:
+            results (:obj:`InstaceData`): Detection instance results,
+                each item has shape (num_bboxes, ).
+            cfg (ConfigDict): Test / postprocessing configuration,
+                if None, test_cfg would be used.
+            rescale (bool): If True, return boxes in original image space.
+                Default to False.
+            with_nms (bool): If True, do nms before return boxes.
+                Default to True.
+            img_meta (dict, optional): Image meta info. Defaults to None.
+
+        Returns:
+            :obj:`InstanceData`: Detection results of each image
+            after the post process.
+            Each item usually contains following keys.
+
+                - scores (Tensor): Classification scores, has a shape
+                  (num_instance, )
+                - labels (Tensor): Labels of bboxes, has a shape
+                  (num_instances, ).
+                - bboxes (Tensor): Has a shape (num_instances, 4),
+                  the last dimension 4 arrange as (x1, y1, x2, y2).
+        """
+        if rescale:
+            assert img_meta.get('scale_factor') is not None
+            scale_factor = [1 / s for s in img_meta['scale_factor']]
+            results.bboxes = scale_boxes(results.bboxes, scale_factor)
+
+        if hasattr(results, 'score_factors'):
+            # TODO: Add sqrt operation in order to be consistent with
+            #  the paper.
+            score_factors = results.pop('score_factors')
+            results.scores = results.scores * score_factors
+
+        # filter small size bboxes
+        if cfg.get('min_bbox_size', -1) >= 0:
+            w, h = get_box_wh(results.bboxes)
+            valid_mask = (w > cfg.min_bbox_size) & (h > cfg.min_bbox_size)
+            if not valid_mask.all():
+                results = results[valid_mask]
+
+        # TODO: deal with `with_nms` and `nms_cfg=None` in test_cfg
+        if with_nms and results.bboxes.numel() > 0:
+            bboxes = get_box_tensor(results.bboxes)
+            det_bboxes, keep_idxs = batched_nms(bboxes, results.scores,
+                                                #results.labels, cfg.nms)
+                                                torch.zeros_like(results.labels_1), cfg.nms)
+            results = results[keep_idxs]
+            # some nms would reweight the score, such as softnms
+            results.scores = det_bboxes[:, -1]
+            results = results[:cfg.max_per_img]
+
+        return results

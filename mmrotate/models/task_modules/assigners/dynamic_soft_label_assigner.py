@@ -55,14 +55,16 @@ class DynamicSoftLabelAssignerML(BaseAssigner):
         soft_center_radius: float = 3.0,
         topk: int = 13,
         iou_weight: float = 3.0,
-        iou_calculator: ConfigType = dict(type='BboxOverlaps2D')
+        iou_calculator: ConfigType = dict(type='BboxOverlaps2D'),
+        num_classes_1: int = 6,
+        num_classes_2: int = 2,
     ) -> None:
         self.soft_center_radius = soft_center_radius
         self.topk = topk
         self.iou_weight = iou_weight
         self.iou_calculator = TASK_UTILS.build(iou_calculator)
-        self.num_labels_1 = 6
-        self.num_labels_2 = 2
+        self.num_classes_1 = num_classes_1
+        self.num_classes_2 = num_classes_2
 
     def assign(self,
                pred_instances: InstanceData,
@@ -100,6 +102,9 @@ class DynamicSoftLabelAssignerML(BaseAssigner):
 
         decoded_bboxes = pred_instances.bboxes
         pred_scores = pred_instances.scores
+        pred_scores_1 = pred_scores[:, :self.num_classes_1]
+        pred_scores_2 = pred_scores[:, self.num_classes_1:]
+
         priors = pred_instances.priors
         num_bboxes = decoded_bboxes.size(0)
 
@@ -133,7 +138,9 @@ class DynamicSoftLabelAssignerML(BaseAssigner):
         valid_mask = is_in_gts.sum(dim=1) > 0
 
         valid_decoded_bbox = decoded_bboxes[valid_mask]
-        valid_pred_scores = pred_scores[valid_mask]
+        
+        valid_pred_scores_1 = pred_scores_1[valid_mask]
+        valid_pred_scores_2 = pred_scores_2[valid_mask]
         num_valid = valid_decoded_bbox.size(0)
 
         if num_valid == 0:
@@ -162,20 +169,21 @@ class DynamicSoftLabelAssignerML(BaseAssigner):
 
         gt_onehot_label_1 = (
             F.one_hot(gt_labels_1.to(torch.int64),
-                      self.num_labels_1).float().unsqueeze(0).repeat(
+                      self.num_classes_1).float().unsqueeze(0).repeat(
                           num_valid, 1, 1))
         gt_onehot_label_2 = (
             F.one_hot(gt_labels_2.to(torch.int64),
-                      self.num_labels_2).float().unsqueeze(0).repeat(
+                      self.num_classes_2).float().unsqueeze(0).repeat(
                           num_valid, 1, 1))
         
-        valid_pred_scores = valid_pred_scores.unsqueeze(1).repeat(1, num_gt, 1)
+
+        
+        valid_pred_scores_1 = valid_pred_scores_1.unsqueeze(1).repeat(1, num_gt, 1)
+        valid_pred_scores_2 = valid_pred_scores_2.unsqueeze(1).repeat(1, num_gt, 1)
+
         soft_label_1 = gt_onehot_label_1 * pairwise_ious[..., None]
         soft_label_2 = gt_onehot_label_2 * pairwise_ious[..., None]
-
-        assert self.num_labels_1+self.num_labels_2 == valid_pred_scores.shape[-1]
-        valid_pred_scores_1 = valid_pred_scores[:, :, :self.num_labels_1]
-        valid_pred_scores_2 = valid_pred_scores[:, :, self.num_labels_1:]
+        #assert self.num_classes_1+self.num_classes_2 == valid_pred_scores.shape[-1]
 
         scale_factor_1 = soft_label_1 - valid_pred_scores_1.sigmoid()
         scale_factor_2 = soft_label_2 - valid_pred_scores_2.sigmoid()
@@ -191,10 +199,11 @@ class DynamicSoftLabelAssignerML(BaseAssigner):
             reduction='none') * scale_factor_2.abs().pow(2.0)
         soft_cls_cost_2 = soft_cls_cost_2.sum(dim=-1)
 
+        
         soft_cls_cost = (soft_cls_cost_1 + soft_cls_cost_2 ) / 2.0
-
+        
         cost_matrix = soft_cls_cost + iou_cost + soft_center_prior
-
+        
         matched_pred_ious, matched_gt_inds = self.dynamic_k_matching(
             cost_matrix, pairwise_ious, num_gt, valid_mask)
 

@@ -68,10 +68,13 @@ model = dict(
             type='DynamicSoftLabelAssignerML',
             iou_calculator=dict(type='RBboxOverlaps2D'),
             topk=13,
+            num_classes_1=6,
+            num_classes_2=2,
             ),
         allowed_border=-1,
         pos_weight=-1,
         debug=False),
+    
     test_cfg=dict(
         nms_pre=2000,
         min_bbox_size=0,

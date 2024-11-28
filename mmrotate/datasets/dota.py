@@ -260,7 +260,7 @@ class DOTADatasetML(BaseDataset):
         """
 
         instances = self.get_data_info(idx)['instances']
-        return [instance['bbox_label'] for instance in instances]
+        return [instance['bbox_label_1'] for instance in instances]
     def __getitem__(self, idx: int) -> dict:
         """Get the idx-th image and data information of dataset after
         ``self.pipeline``, and ``full_init`` will be called if the dataset has

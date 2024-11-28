@@ -403,10 +403,11 @@ class DOTAMetricsML(DOTAMetric):
             
             result['scores'] = pred['scores'].cpu().numpy()
             
-            result['labels_1'] = pred['labels'].cpu().numpy()#[:,0]
-            #result['labels_2'] = pred['labels'].cpu().numpy()[:,1]
+            result['labels_1'] = pred['labels_1'].cpu().numpy()
+            result['labels_2'] = pred['labels_2'].cpu().numpy()
 
-            result['pred_bbox_scores'] = []
+            result['pred_bbox_scores_1'] = []
+            result['pred_bbox_scores_2'] = []
             
             
             for label in range(len(self.dataset_meta['classes_1'])):
@@ -415,7 +416,15 @@ class DOTAMetricsML(DOTAMetric):
                     result['bboxes'][index], result['scores'][index].reshape(
                         (-1, 1))
                 ])
-                result['pred_bbox_scores'].append(pred_bbox_scores)
+                result['pred_bbox_scores_1'].append(pred_bbox_scores)
+            for label in range(len(self.dataset_meta['classes_2'])):
+                index = np.where(result['labels_2'] == label)[0]
+                pred_bbox_scores = np.hstack([
+                    result['bboxes'][index], result['scores'][index].reshape(
+                        (-1, 1))
+                ])
+                result['pred_bbox_scores_2'].append(pred_bbox_scores)
+
 
             self.results.append((ann, result))
 
@@ -443,17 +452,17 @@ class DOTAMetricsML(DOTAMetric):
         for idx, result in enumerate(results):
             image_id = result.get('img_id', idx)
             labels_1 = result['labels_1']
-            #labels_2 = result['labels_2']
+            labels_2 = result['labels_2']
             bboxes = result['bboxes']
             scores = result['scores']
             # bbox results
-            for i, label_1 in enumerate(labels_1):
+            for i, (label_1,labels_2) in enumerate(zip(labels_1,labels_2)):
                 data = dict()
                 data['image_id'] = image_id
                 data['bbox'] = bboxes[i].tolist()
                 data['score'] = float(scores[i])
                 data['category_1_id'] = int(label_1)
-                #data['category_2_id'] = int(label_2)
+                data['category_2_id'] = int(labels_2)
                 bbox_json_results.append(data)
 
         result_files = dict()
@@ -497,22 +506,39 @@ class DOTAMetricsML(DOTAMetric):
 
         if self.metric == 'mAP':
             assert isinstance(self.iou_thrs, list)
-            dataset_name = self.dataset_meta['classes_1']
-            dets = [pred['pred_bbox_scores'] for pred in preds]
 
+            dets_1 = [pred['pred_bbox_scores_1'] for pred in preds]
+            dets_2 = [pred['pred_bbox_scores_2'] for pred in preds]
+
+            dataset_name_1 = self.dataset_meta['classes_1']
+            dataset_name_2 = self.dataset_meta['classes_2']
             mean_aps = []
             for iou_thr in self.iou_thrs:
                 logger.info(f'\n{"-" * 15}iou_thr: {iou_thr}{"-" * 15}')
-                mean_ap, _ = eval_rbbox_map_ML(
-                    dets,
+                mean_ap_1, _ = eval_rbbox_map_ML(
+                    dets_1,
                     gts,
+                    label_lvl=1,
                     scale_ranges=self.scale_ranges,
                     iou_thr=iou_thr,
                     use_07_metric=self.use_07_metric,
                     box_type=self.predict_box_type,
-                    dataset=dataset_name,
+                    dataset=dataset_name_1,
                     logger=logger)
+                mean_ap_2, _ = eval_rbbox_map_ML(
+                    dets_2,
+                    gts,
+                    label_lvl=2,
+                    scale_ranges=self.scale_ranges,
+                    iou_thr=iou_thr,
+                    use_07_metric=self.use_07_metric,
+                    box_type=self.predict_box_type,
+                    dataset=dataset_name_2,
+                    logger=logger)
+                
+                mean_ap = (mean_ap_1 + mean_ap_2) / 2
                 mean_aps.append(mean_ap)
+                
                 eval_results[f'AP{int(iou_thr * 100):02d}'] = round(mean_ap, 3)
             eval_results['mAP'] = sum(mean_aps) / len(mean_aps)
             eval_results.move_to_end('mAP', last=False)

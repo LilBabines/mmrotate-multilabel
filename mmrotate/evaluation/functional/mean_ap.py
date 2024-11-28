@@ -153,7 +153,7 @@ def get_cls_results(det_results, annotations, class_id, box_type):
     return cls_dets, cls_gts, cls_gts_ignore
 
 
-def get_cls_results_ML(det_results, annotations, class_id, box_type):
+def get_cls_results_ML(det_results, annotations, class_id, box_type,label_lvl):
     """Get det results and gt information of a certain class.
 
     Args:
@@ -166,13 +166,14 @@ def get_cls_results_ML(det_results, annotations, class_id, box_type):
     Returns:
         tuple[list[np.ndarray]]: detected bboxes, gt bboxes, ignored gt bboxes
     """
+    assert label_lvl in [1, 2]
     cls_dets = [img_res[class_id] for img_res in det_results]
 
     cls_gts = []
     cls_gts_ignore = []
     for ann in annotations:
         if len(ann['bboxes']) != 0:
-            gt_inds = ann['labels_1'] == class_id
+            gt_inds = ann[f'labels_{label_lvl}'] == class_id
             cls_gts.append(ann['bboxes'][gt_inds, :])
             ignore_inds = ann['labels_ignore'] == class_id
             cls_gts_ignore.append(ann['bboxes_ignore'][ignore_inds, :])
@@ -328,6 +329,7 @@ def eval_rbbox_map(det_results,
 
 def eval_rbbox_map_ML(det_results,
                    annotations,
+                   label_lvl,
                    scale_ranges=None,
                    iou_thr=0.5,
                    use_07_metric=True,
@@ -382,7 +384,7 @@ def eval_rbbox_map_ML(det_results,
     for i in range(num_classes):
         # get gt and det bboxes of this class
         cls_dets, cls_gts, cls_gts_ignore = get_cls_results_ML(
-            det_results, annotations, i, box_type)
+            det_results, annotations, i, box_type, label_lvl=label_lvl)
 
         # compute tp and fp for each image with multiple processes
         tpfp = pool.starmap(
